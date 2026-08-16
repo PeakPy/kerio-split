@@ -1,8 +1,14 @@
 # Kerio Split
 
-macOS utility that applies **split tunneling** for Kerio Control VPN Client.
+macOS utility for **split tunneling** with Kerio Control VPN Client.
 
-Kerio typically pushes full-tunnel routes (`0.0.0.0/1` + `128.0.0.0/1`). This app removes those hijacks and keeps only the destinations you list (e.g. internal SSH hosts) on the VPN. Everything else stays on the normal interface.
+Kerio often installs full-tunnel routes (`0/1` + `128.0/1`). This app removes that hijack and lets you decide, in the UI:
+
+- **VPN routes** — traffic that must go through Kerio  
+- **Bypass routes** — traffic forced onto the LAN gateway  
+- **DNS / tunnel options** — full-tunnel removal, LAN default, custom DNS, auto-apply  
+- **Appearance** — System / Light / Dark (Settings), with adaptive UI for both modes  
+- **Import / Export** — share `config.json`; validate CIDR/IP on add  
 
 Maintained by Mehrad Technical Team.
 
@@ -10,65 +16,53 @@ Maintained by Mehrad Technical Team.
 
 - macOS 13+
 - Kerio Control VPN Client
-- Xcode Command Line Tools (`xcode-select --install`) or full Xcode
-- Admin password (route changes)
+- Xcode Command Line Tools (`xcode-select --install`)
+- Admin password **once** (helper install)
 
-## Quick start
+## Build / distribute
 
 ```bash
-# Build .app + DMG into ./dist
 make release
-
 open dist/KerioSplit-Mehrad.dmg
 ```
 
-Drag **KerioSplit** onto **Applications** in the DMG window (that icon is a shortcut to `/Applications`, not a copy of your disk).
+Drag **KerioSplit** onto **Applications** in the DMG (that icon is a shortcut to `/Applications`).
 
-Then:
+## First run
 
 1. Connect Kerio in System Settings  
-2. Open Kerio Split → **Connect Split**  
-3. Disconnect Split when finished (Kerio session stays up)
+2. Open **Kerio Split**  
+3. Tap **Install helper (one-time)** and enter your Mac password  
+4. Manage routes under **VPN Routes** / **Bypass** / **Settings**  
+5. Tap **Connect Split** — no password on later connects  
 
-## Configuration
+Uninstall helper anytime from **Settings**.
 
-Default destinations: `Config/targets.txt`
+## Config file
 
-At runtime the app copies/edits targets under:
+Runtime config:
 
-`~/Library/Application Support/KerioSplit/Config/targets.txt`
+`~/Library/Application Support/KerioSplit/Config/config.json`
 
-One host or CIDR per line:
+Example: `Config/config.example.json`
 
-```
-192.168.70.0/24
-# 10.10.10.5
-```
-
-## CLI (optional)
+## CLI
 
 ```bash
+# after helper install (passwordless)
+sudo -n /usr/local/libexec/keriosplit-ctl apply
+sudo -n /usr/local/libexec/keriosplit-ctl restore
+sudo -n /usr/local/libexec/keriosplit-ctl status
+
+# or directly
 sudo ./Scripts/split-tunnel.sh apply
-sudo ./Scripts/split-tunnel.sh restore
-sudo ./Scripts/split-tunnel.sh status
-```
-
-Capture a before/after network snapshot:
-
-```bash
-./Scripts/diagnose.sh before
-./Scripts/diagnose.sh after
 ```
 
 ## Layout
 
 ```
-Config/           default route targets
-Scripts/          split-tunnel + diagnose + release
-KerioSplit/       SwiftUI sources + assets
-Makefile          build / release / clean
+Config/           example JSON + legacy targets.txt
+Scripts/          engine, ctl, helper installer, release
+KerioSplit/       SwiftUI app
+Makefile
 ```
-
-## License
-
-Internal Mehrad use.

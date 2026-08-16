@@ -25,8 +25,11 @@ cp "$ROOT/KerioSplit/Assets.xcassets/MehradLogo.imageset/tom.h@example.org" "$RE
 cp "$ROOT/KerioSplit/Assets.xcassets/MehradLogo.imageset/tom.h@example.org" "$BUNDLE/Assets/MehradLogo.png"
 cp "$ROOT/KerioSplit/Assets.xcassets/AppIcon.appiconset/icon_512.png" "$RES/AppIcon.png" 2>/dev/null || true
 cp "$ROOT/Scripts/split-tunnel.sh" "$BUNDLE/Scripts/"
+cp "$ROOT/Scripts/keriosplit-ctl" "$BUNDLE/Scripts/"
+cp "$ROOT/Scripts/install-helper.sh" "$BUNDLE/Scripts/"
 cp "$ROOT/Config/targets.txt" "$BUNDLE/Config/"
-chmod +x "$BUNDLE/Scripts/split-tunnel.sh"
+cp "$ROOT/Config/config.example.json" "$BUNDLE/Config/"
+chmod +x "$BUNDLE/Scripts/"*.sh "$BUNDLE/Scripts/keriosplit-ctl"
 
 if command -v sips >/dev/null && command -v iconutil >/dev/null; then
   ICONSET="$STAGE/AppIcon.iconset"
@@ -64,9 +67,9 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.1.0</string>
+	<string>1.4.0</string>
 	<key>CFBundleVersion</key>
-	<string>11</string>
+	<string>40</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.utilities</string>
 	<key>LSMinimumSystemVersion</key>
@@ -86,8 +89,12 @@ echo "Compiling…"
 swiftc -parse-as-library \
   "$ROOT/KerioSplit/KerioSplitApp.swift" \
   "$ROOT/KerioSplit/ContentView.swift" \
+  "$ROOT/KerioSplit/OverviewDashboard.swift" \
   "$ROOT/KerioSplit/TunnelController.swift" \
   "$ROOT/KerioSplit/Brand.swift" \
+  "$ROOT/KerioSplit/AppConfig.swift" \
+  "$ROOT/KerioSplit/HelperService.swift" \
+  "$ROOT/KerioSplit/UIComponents.swift" \
   -o "$MACOS/KerioSplit" \
   -sdk "$SDK" \
   -target "$TARGET" \

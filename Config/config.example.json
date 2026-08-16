@@ -1,0 +1,16 @@
+{
+  "vpnRoutes": [
+    "192.168.70.0/24"
+  ],
+  "bypassRoutes": [],
+  "appearance": "system",
+  "options": {
+    "removeFullTunnel": true,
+    "restoreLanDefault": true,
+    "restoreLanDns": true,
+    "customDns": [],
+    "autoApplyOnLaunch": false,
+    "confirmBeforeDisconnect": true,
+    "launchAtLogin": false
+  }
+}

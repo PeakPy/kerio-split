@@ -1,0 +1,23 @@
+#!/bin/bash
+# Privileged control entrypoint. Installed once to /usr/local/libexec/keriosplit-ctl
+# and allowed via /etc/sudoers.d/keriosplit (NOPASSWD) for the installing user.
+set -euo pipefail
+
+REAL_HOME="${SUDO_USER:+$(eval echo "~${SUDO_USER}")}"
+REAL_HOME="${REAL_HOME:-$HOME}"
+SUPPORT="${REAL_HOME}/Library/Application Support/KerioSplit"
+SCRIPT="$SUPPORT/Scripts/split-tunnel.sh"
+
+if [[ ! -x "$SCRIPT" ]]; then
+  # Fallback: same directory layout as repo / app bundle copy
+  HERE="$(cd "$(dirname "$0")" && pwd)"
+  if [[ -x "$HERE/split-tunnel.sh" ]]; then
+    SCRIPT="$HERE/split-tunnel.sh"
+  else
+    echo "keriosplit-ctl: split-tunnel.sh not found at $SCRIPT" >&2
+    exit 1
+  fi
+fi
+
+export KERIOSPLIT_CONFIG="${KERIOSPLIT_CONFIG:-$SUPPORT/Config/config.json}"
+exec /bin/bash "$SCRIPT" "$@"
