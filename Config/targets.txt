@@ -1,0 +1,2 @@
+# One destination per line (host or CIDR). Comments start with #.
+192.168.70.0/24

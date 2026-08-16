@@ -1,0 +1,33 @@
+# Build artifacts
+/dist/
+/build/
+*.dmg
+*.zip
+*.app/
+
+# OS / editor
+.DS_Store
+**/.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Xcode / Swift
+DerivedData/
+xcuserdata/
+*.xcuserstate
+*.xccheckout
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Local runtime state (never commit)
+Diagnostics/
+**/saved-routes.env
+
+# Python bytecode (if any tooling added later)
+__pycache__/
+*.pyc
