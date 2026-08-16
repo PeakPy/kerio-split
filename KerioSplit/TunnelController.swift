@@ -4,6 +4,7 @@ import Combine
 import Darwin
 import ServiceManagement
 import UniformTypeIdentifiers
+import UserNotifications
 
 @MainActor
 final class TunnelController: ObservableObject {
@@ -20,14 +21,40 @@ final class TunnelController: ObservableObject {
     @Published var newDns = ""
     @Published var inputError: String?
     @Published var showDisconnectConfirm = false
+    @Published var kerioTunnelSeen = false
+    @Published var tunnelInterfaces: [String] = []
+    @Published var fullTunnelHijackSeen = false
 
     var configPathDisplay: String { configURL.path }
 
     var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.4.0"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.5.0"
+    }
+
+    var menuBarSubtitle: String {
+        var parts: [String] = []
+        parts.append(helperReady ? "Helper ready" : "Helper needed")
+        if kerioTunnelSeen {
+            let iface = tunnelInterfaces.first ?? "utun"
+            parts.append(iface)
+        } else {
+            parts.append("No Kerio tunnel")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    var menuBarSymbol: String {
+        if isActive { return "bolt.horizontal.circle.fill" }
+        if kerioTunnelSeen { return "bolt.horizontal.circle" }
+        return "circle.dashed"
     }
 
     private let fileManager = FileManager.default
+    private var pollTimer: Timer?
+    private var busyWatchdog: Timer?
+    private var didBootstrap = false
+    private var notificationsAuthorized = false
+    private var statusPinnedUntil: Date?
 
     private var supportRoot: URL {
         fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -59,44 +86,125 @@ final class TunnelController: ObservableObject {
     private var scriptURL: URL { scriptsDir.appendingPathComponent("split-tunnel.sh") }
 
     func onAppear() {
+        guard !didBootstrap else {
+            detectApplied()
+            // Defer background work so first paint stays responsive.
+            DispatchQueue.main.async { [weak self] in
+                self?.probeNetwork()
+                self?.refreshHelperStatus()
+            }
+            return
+        }
+        didBootstrap = true
+        isBusy = false
         ensureWritableSupport()
         loadConfig()
-        syncLaunchAtLoginFromSystem()
-        refreshHelperStatus()
         detectApplied()
-        if config.options.autoApplyOnLaunch, helperReady, !isActive {
-            apply()
+        requestNotificationsIfNeeded()
+        startMonitoring()
+
+        // Everything that might talk to the system goes after the first frame.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.syncLaunchAtLoginFromSystem()
+            self.refreshHelperStatus()
+            self.probeNetwork()
+            if self.config.options.autoApplyOnLaunch, self.helperReady, !self.isActive {
+                self.apply()
+            }
         }
     }
 
+    func startMonitoring() {
+        guard pollTimer == nil else { return }
+        let timer = Timer(timeInterval: 45, repeats: true) { [weak self] _ in
+            DispatchQueue.main.async {
+                self?.detectApplied()
+                self?.probeNetwork()
+                self?.refreshHelperStatus()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        pollTimer = timer
+    }
+
     private func syncLaunchAtLoginFromSystem() {
-        let enabled = SMAppService.mainApp.status == .enabled
-        if config.options.launchAtLogin != enabled {
-            config.options.launchAtLogin = enabled
-            try? config.save(to: configURL)
-            syncJsonFromConfig()
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let enabled = SMAppService.mainApp.status == .enabled
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if self.config.options.launchAtLogin != enabled {
+                    self.config.options.launchAtLogin = enabled
+                    try? self.config.save(to: self.configURL)
+                    self.syncJsonFromConfig()
+                }
+            }
         }
     }
 
     func refreshHelperStatus() {
-        helperReady = HelperService.canRunPasswordless()
-        if helperReady {
-            statusText = isActive
-                ? "Split ON — passwordless helper active"
-                : "Ready — passwordless helper active"
-        } else if HelperService.isInstalled {
-            statusText = "Helper present but sudoers not working — reinstall helper"
-        } else {
-            statusText = "Install helper once to skip password prompts"
+        // Instant optimistic UI from filesystem only (no sudo on main).
+        let installed = HelperService.isInstalled
+        if !installed {
+            helperReady = false
+            if shouldUpdateStatusText() {
+                statusText = "Install helper once to skip password prompts"
+            }
+            return
+        }
+        if !helperReady {
+            helperReady = true // show ready immediately; verify below
+        }
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let ready = HelperService.canRunPasswordless()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.helperReady = ready
+                guard self.shouldUpdateStatusText() else { return }
+                if ready {
+                    self.statusText = self.isActive
+                        ? "Split ON — passwordless helper active"
+                        : "Ready — passwordless helper active"
+                } else {
+                    self.statusText = "Helper present but sudoers not working — reinstall helper"
+                }
+            }
+        }
+    }
+
+    private func pinStatus(_ text: String, seconds: TimeInterval = 8) {
+        statusText = text
+        statusPinnedUntil = Date().addingTimeInterval(seconds)
+    }
+
+    private func shouldUpdateStatusText() -> Bool {
+        guard let until = statusPinnedUntil else { return true }
+        return Date() >= until
+    }
+
+    private func setBusy(_ value: Bool) {
+        isBusy = value
+        busyWatchdog?.invalidate()
+        busyWatchdog = nil
+        guard value else { return }
+        // Safety valve: never leave the Connect button spinning forever.
+        busyWatchdog = Timer(timeInterval: 20, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.isBusy else { return }
+                self.isBusy = false
+                self.pinStatus("Timed out — see Activity", seconds: 12)
+                self.appendLog("Busy state cleared after timeout")
+            }
+        }
+        if let busyWatchdog {
+            RunLoop.main.add(busyWatchdog, forMode: .common)
         }
     }
 
     func installHelper() {
-        isBusy = true
+        setBusy(true)
         syncScriptsToSupport()
-        // Install from Application Support copy so paths resolve cleanly.
         let supportScripts = supportRoot.appendingPathComponent("Scripts")
-        // Ensure install-helper sees Config/ next to Scripts/
         let example = bundleRoot.appendingPathComponent("Config/config.example.json")
         let destExample = supportRoot.appendingPathComponent("Config/config.example.json")
         if fileManager.fileExists(atPath: example.path) {
@@ -107,27 +215,27 @@ final class TunnelController: ObservableObject {
             try? fileManager.removeItem(at: destExample)
             try? fileManager.copyItem(at: example, to: destExample)
         }
-        Task.detached { [weak self] in
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = HelperService.install(fromBundleScripts: supportScripts)
-            await MainActor.run {
+            DispatchQueue.main.async {
                 guard let self else { return }
-                self.isBusy = false
+                self.setBusy(false)
                 self.appendLog(result.text.isEmpty ? (result.ok ? "Helper installed" : "Install failed") : result.text)
                 self.refreshHelperStatus()
                 if result.ok {
-                    self.statusText = "Helper installed — Connect Split no longer needs a password"
+                    self.pinStatus("Helper installed — Connect Split no longer needs a password")
                 }
             }
         }
     }
 
     func uninstallHelper() {
-        isBusy = true
-        Task.detached { [weak self] in
+        setBusy(true)
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = HelperService.uninstall()
-            await MainActor.run {
+            DispatchQueue.main.async {
                 guard let self else { return }
-                self.isBusy = false
+                self.setBusy(false)
                 self.appendLog(result.text)
                 self.refreshHelperStatus()
             }
@@ -146,20 +254,27 @@ final class TunnelController: ObservableObject {
         }
     }
 
+    /// Menu bar / quick actions skip the confirm dialog.
+    func toggleFromMenuBar() {
+        if isActive { restore() } else { apply() }
+    }
+
     func confirmDisconnect() {
         showDisconnectConfirm = false
         restore()
     }
 
     func apply() {
-        saveConfig()
+        saveConfig(quiet: true)
         syncScriptsToSupport()
         runEngine(arguments: ["apply"]) { [weak self] ok, output in
             guard let self else { return }
             if ok || output.contains("split tunnel applied") || output.contains("hijack") {
                 self.isActive = true
-                self.statusText = "Split ON — VPN routes + bypass applied"
+                self.pinStatus("Split ON — VPN routes + bypass applied")
+                self.notify(title: "Split tunneling ON", body: "VPN routes applied. General traffic uses LAN.")
             }
+            self.probeNetwork()
         }
     }
 
@@ -168,16 +283,84 @@ final class TunnelController: ObservableObject {
             guard let self else { return }
             if ok {
                 self.isActive = false
-                self.statusText = "Split OFF — Kerio session unchanged"
+                self.clearAppliedMarkerLocally()
+                self.pinStatus("Split OFF — Kerio session unchanged")
+                self.notify(title: "Split tunneling OFF", body: "Routes restored. Kerio session left alone.")
             }
+            self.probeNetwork()
         }
     }
 
     func refreshStatus() {
         runEngine(arguments: ["status"], preferUser: true) { [weak self] _, output in
             self?.appendLog(output)
-            self?.statusText = "Status refreshed"
+            self?.pinStatus("Status refreshed", seconds: 4)
+            self?.probeNetwork()
         }
+    }
+
+    func probeNetwork() {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let result = Self.scanNetwork()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.kerioTunnelSeen = result.hasKerio
+                self.tunnelInterfaces = result.utuns
+                self.fullTunnelHijackSeen = result.hasHijack
+            }
+        }
+    }
+
+    private nonisolated static func scanNetwork() -> (hasKerio: Bool, utuns: [String], hasHijack: Bool) {
+        let routes = HelperService.runProcess("/usr/sbin/netstat", ["-rn", "-f", "inet"], timeoutSeconds: 3).text
+        let hijack = routes.contains("0/1") || routes.contains("128.0/1")
+
+        let ifconfig = HelperService.runProcess("/sbin/ifconfig", [], timeoutSeconds: 3).text
+        var candidates: [String] = []
+        var current: String?
+        for raw in ifconfig.split(separator: "\n") {
+            let line = String(raw)
+            if line.hasPrefix("utun"), let name = line.split(separator: ":").first {
+                current = String(name)
+                continue
+            }
+            guard let iface = current else { continue }
+            if line.hasPrefix("\t") || line.hasPrefix(" ") {
+                if line.contains("inet "),
+                   line.contains("inet 10.") || line.contains("inet 172.") {
+                    candidates.append(iface)
+                    current = nil
+                }
+            } else if !line.isEmpty {
+                current = nil
+            }
+        }
+        let list = Array(Set(candidates)).sorted()
+        let hasKerio = !list.isEmpty || hijack
+        return (hasKerio, list, hijack)
+    }
+
+    private func requestNotificationsIfNeeded() {
+        guard config.options.notifyOnChange else { return }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
+            Task { @MainActor in
+                self.notificationsAuthorized = granted
+            }
+        }
+    }
+
+    private func notify(title: String, body: String) {
+        guard config.options.notifyOnChange else { return }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        let request = UNNotificationRequest(
+            identifier: "keriosplit-\(UUID().uuidString)",
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request)
     }
 
     // MARK: - Config mutations
@@ -207,8 +390,15 @@ final class TunnelController: ObservableObject {
     }
 
     func setAppearance(_ mode: AppearanceMode) {
+        guard config.appearance != mode else { return }
         config.appearance = mode
-        saveConfig()
+        saveConfig(quiet: true)
+    }
+
+    func setShowMenuBar(_ enabled: Bool) {
+        guard config.options.showMenuBar != enabled else { return }
+        config.options.showMenuBar = enabled
+        saveConfig(quiet: true)
     }
 
     func setLaunchAtLogin(_ enabled: Bool) {
@@ -315,14 +505,19 @@ final class TunnelController: ObservableObject {
         saveConfig()
     }
 
-    func saveConfig() {
+    func saveConfig(quiet: Bool = false) {
         ensureWritableSupport()
         config.sanitize()
         do {
             try config.save(to: configURL)
-            syncJsonFromConfig()
+            let pretty = (try? config.prettyJSON()) ?? jsonText
+            if jsonText != pretty {
+                jsonText = pretty
+            }
             jsonError = nil
-            appendLog("Config saved → \(configURL.path)")
+            if !quiet {
+                appendLog("Config saved → \(configURL.path)")
+            }
         } catch {
             appendLog("Save failed: \(error.localizedDescription)")
         }
@@ -377,25 +572,31 @@ final class TunnelController: ObservableObject {
 
     private func detectApplied() {
         let state = supportRoot.appendingPathComponent("saved-routes.env")
-        if let data = try? String(contentsOf: state, encoding: .utf8),
-           data.contains("APPLIED_AT=") {
-            isActive = true
+        guard fileManager.fileExists(atPath: state.path),
+              let data = try? String(contentsOf: state, encoding: .utf8) else {
+            isActive = false
+            return
         }
+        isActive = data.contains("APPLIED_AT=")
+    }
+
+    private func clearAppliedMarkerLocally() {
+        let state = supportRoot.appendingPathComponent("saved-routes.env")
+        guard let data = try? String(contentsOf: state, encoding: .utf8) else { return }
+        let filtered = data
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !$0.hasPrefix("APPLIED_AT=") }
+            .joined(separator: "\n")
+        // May fail if root-owned; restore script also clears this when helper works.
+        try? filtered.write(to: state, atomically: true, encoding: .utf8)
+        isActive = false
     }
 
     private func ensureWritableSupport() {
         let root = supportRoot
         let configDir = root.appendingPathComponent("Config", isDirectory: true)
-        if isWritable(root) {
-            try? fileManager.createDirectory(at: configDir, withIntermediateDirectories: true)
-            return
-        }
-        let uid = getuid()
-        let path = root.path.replacingOccurrences(of: "'", with: "'\\''")
-        _ = appleScriptAdmin(
-            "mkdir -p '\(path)/Config' && chown -R \(uid):staff '\(path)' && chmod -R u+rwX '\(path)'"
-        )
         try? fileManager.createDirectory(at: configDir, withIntermediateDirectories: true)
+        // Never raise an admin password dialog during launch — that freezes the mouse cursor.
     }
 
     private func isWritable(_ url: URL) -> Bool {
@@ -434,50 +635,31 @@ final class TunnelController: ObservableObject {
     }
 
     private func runEngine(arguments: [String], preferUser: Bool = false, completion: ((Bool, String) -> Void)? = nil) {
-        isBusy = true
+        setBusy(true)
         let script = scriptURL.path
         let useHelper = !preferUser && (helperReady || HelperService.isInstalled)
 
-        Task.detached { [weak self] in
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result: (ok: Bool, text: String)
             if useHelper {
-                // Ensure config path is visible to ctl via Application Support
                 result = HelperService.runCtl(arguments)
             } else if preferUser || arguments.first == "status" {
-                result = Self.runUserProcess(script: script, arguments: arguments)
+                result = HelperService.runProcess("/bin/bash", [script] + arguments, timeoutSeconds: 20)
             } else {
                 let quotedScript = script.replacingOccurrences(of: "'", with: "'\\''")
                 let args = arguments.map { "'\($0.replacingOccurrences(of: "'", with: "'\\''"))'" }.joined(separator: " ")
                 result = appleScriptAdmin("/bin/bash '\(quotedScript)' \(args) 2>&1")
             }
 
-            await MainActor.run {
+            DispatchQueue.main.async {
                 guard let self else { return }
-                self.isBusy = false
+                self.setBusy(false)
                 self.appendLog(result.text.isEmpty ? (result.ok ? "OK" : "Failed") : result.text)
                 if !result.ok {
-                    self.statusText = "Action failed — see Activity"
+                    self.pinStatus("Action failed — see Activity", seconds: 10)
                 }
                 completion?(result.ok, result.text)
             }
-        }
-    }
-
-    private nonisolated static func runUserProcess(script: String, arguments: [String]) -> (ok: Bool, text: String) {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/bin/bash")
-        proc.arguments = [script] + arguments
-        let pipe = Pipe()
-        proc.standardOutput = pipe
-        proc.standardError = pipe
-        do {
-            try proc.run()
-            proc.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let text = String(data: data, encoding: .utf8) ?? ""
-            return (proc.terminationStatus == 0, text)
-        } catch {
-            return (false, error.localizedDescription)
         }
     }
 

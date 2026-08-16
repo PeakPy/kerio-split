@@ -11,6 +11,8 @@
     "customDns": [],
     "autoApplyOnLaunch": false,
     "confirmBeforeDisconnect": true,
-    "launchAtLogin": false
+    "launchAtLogin": false,
+    "showMenuBar": true,
+    "notifyOnChange": true
   }
 }

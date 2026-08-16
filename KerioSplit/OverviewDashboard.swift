@@ -4,27 +4,139 @@ import SwiftUI
 struct OverviewDashboard: View {
     @ObservedObject var controller: TunnelController
     var onNavigate: (AppSection) -> Void
-
-    @State private var appeared = false
-    @State private var pulse = false
+    @StateObject private var resources = ResourceMonitor()
 
     var body: some View {
         PageScroll {
             VStack(alignment: .leading, spacing: 16) {
                 heroBanner
+                resourceStrip
+                networkStrip
                 metricsRow
                 helperCard
                 shortcutsCard
             }
-            .opacity(appeared ? 1 : 0)
-            .offset(y: appeared ? 0 : 10)
         }
-        .onAppear {
-            withAnimation(.easeOut(duration: 0.45)) { appeared = true }
-            withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true)) {
-                pulse = true
+        .onAppear { resources.start() }
+        .onDisappear { resources.stop() }
+    }
+
+    // MARK: - Resources
+
+    private var resourceStrip: some View {
+        SurfaceCard(padding: 12) {
+            HStack(spacing: 10) {
+                resourceChip(
+                    title: "CPU",
+                    value: resources.cpuText,
+                    detail: "This app",
+                    icon: "gauge.with.dots.needle.67percent"
+                )
+                resourceChip(
+                    title: "App RAM",
+                    value: resources.appMemoryText,
+                    detail: "Resident",
+                    icon: "memorychip"
+                )
+                resourceChip(
+                    title: "System memory",
+                    value: String(format: "%.0f%%", resources.systemPercent),
+                    detail: resources.systemMemoryText,
+                    icon: "internaldrive"
+                )
             }
         }
+    }
+
+    private func resourceChip(title: String, value: String, detail: String, icon: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Brand.primary)
+                .frame(width: 28, height: 28)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Brand.primary.opacity(0.12))
+                )
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title.uppercased())
+                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                    .foregroundStyle(Brand.muted)
+                Text(value)
+                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                    .foregroundStyle(Brand.ink)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                Text(detail)
+                    .font(.system(size: 10))
+                    .foregroundStyle(Brand.muted)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Brand.field)
+        )
+    }
+
+    // MARK: - Network strip
+
+    private var networkStrip: some View {
+        SurfaceCard(padding: 14) {
+            HStack(alignment: .center, spacing: 14) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(controller.kerioTunnelSeen
+                              ? Brand.primary.opacity(0.14)
+                              : Brand.field)
+                        .frame(width: 40, height: 40)
+                    Image(systemName: controller.kerioTunnelSeen ? "network" : "network.slash")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(controller.kerioTunnelSeen ? Brand.primary : Brand.muted)
+                }
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(controller.kerioTunnelSeen ? "Kerio tunnel detected" : "No Kerio tunnel yet")
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Brand.ink)
+                    Text(networkDetail)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Brand.muted)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Button("Probe") {
+                    controller.probeNetwork()
+                    controller.refreshHelperStatus()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(controller.isBusy)
+            }
+        }
+    }
+
+    private var networkDetail: String {
+        if controller.kerioTunnelSeen {
+            let ifaces = controller.tunnelInterfaces.isEmpty
+                ? "utun"
+                : controller.tunnelInterfaces.joined(separator: ", ")
+            if controller.fullTunnelHijackSeen && !controller.isActive {
+                return "\(ifaces) · full-tunnel hijack still present — Connect Split to fix"
+            }
+            if controller.isActive {
+                return "\(ifaces) · split routes active"
+            }
+            return "\(ifaces) · connect split when ready"
+        }
+        return "Connect Kerio Control VPN Client, then enable split tunneling here."
     }
 
     // MARK: - Hero
@@ -65,6 +177,10 @@ struct OverviewDashboard: View {
                         title: controller.helperReady ? "Helper" : "Setup",
                         lit: controller.helperReady
                     )
+                    statusChip(
+                        title: controller.kerioTunnelSeen ? "Kerio up" : "Kerio down",
+                        lit: controller.kerioTunnelSeen
+                    )
                     Spacer(minLength: 0)
                 }
 
@@ -82,14 +198,12 @@ struct OverviewDashboard: View {
 
                 Button(action: { controller.toggle() }) {
                     HStack(spacing: 8) {
-                        if controller.isBusy {
-                            ProgressView()
-                                .controlSize(.small)
-                                .tint(Brand.deep)
-                        } else {
-                            Image(systemName: controller.isActive ? "link.badge.minus" : "bolt.fill")
-                        }
-                        Text(controller.isActive ? "Disconnect Split" : "Connect Split")
+                        Image(systemName: controller.isBusy
+                              ? "hourglass"
+                              : (controller.isActive ? "link.badge.minus" : "bolt.fill"))
+                        Text(controller.isBusy
+                             ? "Working…"
+                             : (controller.isActive ? "Disconnect Split" : "Connect Split"))
                             .font(.system(size: 14, weight: .semibold, design: .rounded))
                     }
                     .foregroundStyle(Brand.deep)
@@ -103,8 +217,6 @@ struct OverviewDashboard: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(controller.isBusy)
-                .opacity(controller.isBusy ? 0.85 : 1)
-                .scaleEffect(appeared ? 1 : 0.96)
             }
             .padding(22)
         }
@@ -117,8 +229,6 @@ struct OverviewDashboard: View {
             Circle()
                 .fill(lit ? Color.white : Color.white.opacity(0.45))
                 .frame(width: 7, height: 7)
-                .scaleEffect(lit && pulse ? 1.25 : 1)
-                .opacity(lit && pulse ? 1 : 0.7)
             Text(title)
                 .font(.system(size: 11, weight: .semibold, design: .rounded))
                 .foregroundStyle(.white)
@@ -214,7 +324,7 @@ struct OverviewDashboard: View {
                 }
                 .padding(.vertical, 4)
 
-                WrappingHStack(spacing: 8) {
+                ButtonRow {
                     if controller.helperReady {
                         Button("Uninstall helper") { controller.uninstallHelper() }
                             .buttonStyle(.bordered)
@@ -325,8 +435,6 @@ private struct MetricTile: View {
     let hint: String
     let action: () -> Void
 
-    @State private var hovering = false
-
     var body: some View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: 10) {
@@ -342,7 +450,7 @@ private struct MetricTile: View {
                     Spacer(minLength: 0)
                     Image(systemName: "chevron.right")
                         .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(Brand.muted.opacity(hovering ? 1 : 0.5))
+                        .foregroundStyle(Brand.muted)
                 }
 
                 Text(value)
@@ -365,14 +473,11 @@ private struct MetricTile: View {
                     .fill(Brand.panel)
                     .overlay(
                         RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .strokeBorder(hovering ? Brand.primary.opacity(0.35) : Brand.line, lineWidth: 1)
+                            .strokeBorder(Brand.line, lineWidth: 1)
                     )
             )
-            .scaleEffect(hovering ? 1.015 : 1)
-            .animation(.easeOut(duration: 0.18), value: hovering)
         }
         .buttonStyle(.plain)
-        .onHover { hovering = $0 }
     }
 }
 
@@ -381,8 +486,6 @@ private struct ShortcutTile: View {
     let subtitle: String
     let icon: String
     let action: () -> Void
-
-    @State private var hovering = false
 
     var body: some View {
         Button(action: action) {
@@ -409,20 +512,17 @@ private struct ShortcutTile: View {
                 Image(systemName: "arrow.up.right")
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(Brand.muted)
-                    .opacity(hovering ? 1 : 0.45)
             }
             .padding(12)
             .background(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(hovering ? Brand.field : Brand.panel.opacity(0.01))
+                    .fill(Brand.panel)
                     .overlay(
                         RoundedRectangle(cornerRadius: 12, style: .continuous)
                             .strokeBorder(Brand.line, lineWidth: 1)
                     )
             )
-            .animation(.easeOut(duration: 0.15), value: hovering)
         }
         .buttonStyle(.plain)
-        .onHover { hovering = $0 }
     }
 }

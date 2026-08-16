@@ -12,6 +12,16 @@ Kerio often installs full-tunnel routes (`0/1` + `128.0/1`). This app removes th
 
 Maintained by Mehrad Technical Team.
 
+## Features
+
+- Menu bar icon for quick Connect / Disconnect / Open
+- Light / Dark / System appearance
+- Passwordless privileged helper (one-time install)
+- VPN + bypass routes, DNS options, import/export config
+- Notifications when split is applied or restored
+- Kerio tunnel probe on the overview dashboard
+- Live CPU / app RAM / system memory on the dashboard
+
 ## Requirements
 
 - macOS 13+

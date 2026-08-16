@@ -12,7 +12,8 @@ struct PageScroll<Content: View>: View {
                 .frame(maxWidth: 820, alignment: .topLeading)
                 .frame(maxWidth: .infinity, alignment: .top)
         }
-        .scrollIndicators(.automatic)
+        // Critical on macOS NavigationSplitView: without this, detail can collapse to empty.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Brand.softGradient.ignoresSafeArea())
     }
 }
@@ -92,13 +93,16 @@ struct PrimaryButton: View {
         Button(action: action) {
             HStack(spacing: 8) {
                 if busy {
-                    ProgressView().controlSize(.small).tint(.white)
-                } else if let systemImage {
-                    Image(systemName: systemImage)
+                    Text("Working…")
+                        .font(.system(size: 14, weight: .semibold, design: .rounded))
+                } else {
+                    if let systemImage {
+                        Image(systemName: systemImage)
+                    }
+                    Text(title)
+                        .font(.system(size: 14, weight: .semibold, design: .rounded))
+                        .lineLimit(1)
                 }
-                Text(title)
-                    .font(.system(size: 14, weight: .semibold, design: .rounded))
-                    .lineLimit(1)
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 12)
@@ -222,7 +226,6 @@ struct AddRouteField: View {
     }
 }
 
-/// Avoids macOS Toggle label/switch collision with long subtitles.
 struct SettingsToggle: View {
     let title: String
     let subtitle: String
@@ -274,49 +277,17 @@ struct AppearancePicker: View {
     }
 }
 
-/// Wraps children when the row is too narrow.
-struct WrappingHStack: Layout {
-    var spacing: CGFloat = 8
-    var lineSpacing: CGFloat = 8
+/// Adaptive button rows without custom Layout (avoids ScrollView layout hangs).
+struct ButtonRow<Content: View>: View {
+    @ViewBuilder var content: () -> Content
 
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let result = arrange(proposal: proposal, subviews: subviews)
-        return result.size
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        let result = arrange(proposal: proposal, subviews: subviews)
-        for (index, origin) in result.origins.enumerated() {
-            subviews[index].place(
-                at: CGPoint(x: bounds.minX + origin.x, y: bounds.minY + origin.y),
-                proposal: ProposedViewSize(result.sizes[index])
-            )
+    var body: some View {
+        LazyVGrid(
+            columns: [GridItem(.adaptive(minimum: 130), spacing: 8, alignment: .leading)],
+            alignment: .leading,
+            spacing: 8
+        ) {
+            content()
         }
-    }
-
-    private func arrange(proposal: ProposedViewSize, subviews: Subviews) -> (size: CGSize, origins: [CGPoint], sizes: [CGSize]) {
-        let maxWidth = proposal.width ?? .infinity
-        var origins: [CGPoint] = []
-        var sizes: [CGSize] = []
-        var x: CGFloat = 0
-        var y: CGFloat = 0
-        var rowHeight: CGFloat = 0
-        var totalWidth: CGFloat = 0
-
-        for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
-            if x > 0, x + size.width > maxWidth {
-                x = 0
-                y += rowHeight + lineSpacing
-                rowHeight = 0
-            }
-            origins.append(CGPoint(x: x, y: y))
-            sizes.append(size)
-            rowHeight = max(rowHeight, size.height)
-            x += size.width + spacing
-            totalWidth = max(totalWidth, x - spacing)
-        }
-
-        return (CGSize(width: totalWidth, height: y + rowHeight), origins, sizes)
     }
 }

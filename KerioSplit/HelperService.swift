@@ -10,42 +10,33 @@ enum HelperService {
             && FileManager.default.fileExists(atPath: sudoersPath)
     }
 
-    /// `sudo -n` succeeds without password when helper is installed.
+    /// Must be called off the main thread.
     static func canRunPasswordless() -> Bool {
         guard isInstalled else { return false }
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-        proc.arguments = ["-n", ctlPath, "status"]
-        proc.standardOutput = Pipe()
-        proc.standardError = Pipe()
-        do {
-            try proc.run()
-            proc.waitUntilExit()
-            return proc.terminationStatus == 0
-        } catch {
-            return false
-        }
+        return runProcess(
+            "/usr/bin/sudo",
+            ["-n", ctlPath, "status"],
+            timeoutSeconds: 3
+        ).ok
     }
 
+    /// Must be called off the main thread (except the AppleScript fallback, which shows a UI prompt).
     static func runCtl(_ arguments: [String]) -> (ok: Bool, text: String) {
-        if canRunPasswordless() {
-            return runProcess("/usr/bin/sudo", ["-n", ctlPath] + arguments)
+        guard FileManager.default.isExecutableFile(atPath: ctlPath) else {
+            return (false, "Helper not installed")
         }
-        // Fallback: one admin prompt
+        if FileManager.default.fileExists(atPath: sudoersPath) {
+            return runProcess("/usr/bin/sudo", ["-n", ctlPath] + arguments, timeoutSeconds: 20)
+        }
         let joined = ([ctlPath] + arguments)
             .map { "'\($0.replacingOccurrences(of: "'", with: "'\\''"))'" }
             .joined(separator: " ")
-        // Prefer ctl if present even without sudoers
-        if FileManager.default.isExecutableFile(atPath: ctlPath) {
-            return appleScriptAdmin("/usr/bin/sudo \(joined) 2>&1")
-        }
-        return (false, "Helper not installed")
+        return appleScriptAdmin("/usr/bin/sudo \(joined) 2>&1")
     }
 
     static func install(fromBundleScripts scriptsDir: URL) -> (ok: Bool, text: String) {
         let installScript = scriptsDir.appendingPathComponent("install-helper.sh")
         let path = installScript.path.replacingOccurrences(of: "'", with: "'\\''")
-        // Copy repo root expectation: install-helper uses ROOT=parent of Scripts
         return appleScriptAdmin("/bin/bash '\(path)' 2>&1")
     }
 
@@ -56,7 +47,9 @@ enum HelperService {
         return appleScriptAdmin(shell)
     }
 
-    private static func runProcess(_ exe: String, _ args: [String]) -> (ok: Bool, text: String) {
+    /// Blocking process runner — call only from a background queue.
+    static func runProcess(_ exe: String, _ args: [String], timeoutSeconds: TimeInterval = 30) -> (ok: Bool, text: String) {
+        // Call only from a background queue — never block the UI / mouse cursor.
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: exe)
         proc.arguments = args
@@ -65,7 +58,20 @@ enum HelperService {
         proc.standardError = pipe
         do {
             try proc.run()
-            proc.waitUntilExit()
+
+            let group = DispatchGroup()
+            group.enter()
+            DispatchQueue.global(qos: .userInitiated).async {
+                proc.waitUntilExit()
+                group.leave()
+            }
+            let waitResult = group.wait(timeout: .now() + timeoutSeconds)
+            if waitResult == .timedOut {
+                proc.terminate()
+                _ = group.wait(timeout: .now() + 1)
+                return (false, "Timed out after \(Int(timeoutSeconds))s")
+            }
+
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             let text = String(data: data, encoding: .utf8) ?? ""
             return (proc.terminationStatus == 0, text)

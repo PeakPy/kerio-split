@@ -399,6 +399,12 @@ cmd_restore() {
   if [[ -n "${BEFORE_DEFAULT_GW:-}" ]]; then
     route -n add default "$BEFORE_DEFAULT_GW" 2>/dev/null || true
   fi
+  # Clear applied marker so the app no longer thinks split is ON.
+  if [[ -f "$STATE_FILE" ]]; then
+    grep -v -E "^APPLIED_AT=" "$STATE_FILE" > "${STATE_FILE}.tmp" 2>/dev/null || true
+    mv "${STATE_FILE}.tmp" "$STATE_FILE"
+    [[ -n "${SUDO_USER:-}" ]] && chown "${SUDO_USER}" "$STATE_FILE" 2>/dev/null || true
+  fi
   log "managed routes removed"
 }
 

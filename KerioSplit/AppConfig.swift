@@ -30,6 +30,8 @@ struct AppConfig: Codable, Equatable {
         var autoApplyOnLaunch: Bool
         var confirmBeforeDisconnect: Bool
         var launchAtLogin: Bool
+        var showMenuBar: Bool
+        var notifyOnChange: Bool
 
         static let `default` = Options(
             removeFullTunnel: true,
@@ -38,7 +40,9 @@ struct AppConfig: Codable, Equatable {
             customDns: [],
             autoApplyOnLaunch: false,
             confirmBeforeDisconnect: true,
-            launchAtLogin: false
+            launchAtLogin: false,
+            showMenuBar: true,
+            notifyOnChange: true
         )
 
         init(
@@ -48,7 +52,9 @@ struct AppConfig: Codable, Equatable {
             customDns: [String],
             autoApplyOnLaunch: Bool,
             confirmBeforeDisconnect: Bool,
-            launchAtLogin: Bool
+            launchAtLogin: Bool,
+            showMenuBar: Bool,
+            notifyOnChange: Bool
         ) {
             self.removeFullTunnel = removeFullTunnel
             self.restoreLanDefault = restoreLanDefault
@@ -57,6 +63,8 @@ struct AppConfig: Codable, Equatable {
             self.autoApplyOnLaunch = autoApplyOnLaunch
             self.confirmBeforeDisconnect = confirmBeforeDisconnect
             self.launchAtLogin = launchAtLogin
+            self.showMenuBar = showMenuBar
+            self.notifyOnChange = notifyOnChange
         }
 
         init(from decoder: Decoder) throws {
@@ -68,6 +76,8 @@ struct AppConfig: Codable, Equatable {
             autoApplyOnLaunch = try c.decodeIfPresent(Bool.self, forKey: .autoApplyOnLaunch) ?? false
             confirmBeforeDisconnect = try c.decodeIfPresent(Bool.self, forKey: .confirmBeforeDisconnect) ?? true
             launchAtLogin = try c.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? false
+            showMenuBar = try c.decodeIfPresent(Bool.self, forKey: .showMenuBar) ?? true
+            notifyOnChange = try c.decodeIfPresent(Bool.self, forKey: .notifyOnChange) ?? true
         }
     }
 

@@ -12,24 +12,25 @@ struct ContentView: View {
         } detail: {
             detail
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Brand.mist.opacity(0.001)) // force layout pass
+                .id(section)
         }
         .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 780, minHeight: 560)
-        .preferredColorScheme(preferredScheme)
         .alert("Disconnect split tunneling?", isPresented: $controller.showDisconnectConfirm) {
             Button("Cancel", role: .cancel) {}
             Button("Disconnect", role: .destructive) { controller.confirmDisconnect() }
         } message: {
             Text("Kerio VPN stays connected. Only the split routes are removed.")
         }
-        .onAppear { controller.onAppear() }
-    }
-
-    private var preferredScheme: ColorScheme? {
-        switch controller.config.appearance {
-        case .system: return nil
-        case .light: return .light
-        case .dark: return .dark
+        .onAppear {
+            controller.isBusy = false
+            controller.onAppear()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .kerioSplitNavigate)) { note in
+            if let dest = note.object as? AppSection {
+                section = dest
+            }
         }
     }
 
@@ -278,6 +279,24 @@ struct ContentView: View {
                                 set: { controller.setLaunchAtLogin($0) }
                             )
                         )
+                        Divider()
+                        SettingsToggle(
+                            title: "Show in menu bar",
+                            subtitle: "Status icon in the top menu bar for quick Connect/Disconnect.",
+                            isOn: Binding(
+                                get: { controller.config.options.showMenuBar },
+                                set: { controller.setShowMenuBar($0) }
+                            )
+                        )
+                        Divider()
+                        SettingsToggle(
+                            title: "Notify on connect/disconnect",
+                            subtitle: "macOS notifications when split tunneling is applied or restored.",
+                            isOn: Binding(
+                                get: { controller.config.options.notifyOnChange },
+                                set: { controller.config.options.notifyOnChange = $0; controller.saveConfig() }
+                            )
+                        )
                     }
                 }
 
@@ -306,7 +325,7 @@ struct ContentView: View {
                             .lineLimit(3)
                             .fixedSize(horizontal: false, vertical: true)
 
-                        WrappingHStack(spacing: 8) {
+                        ButtonRow {
                             Button("Reveal in Finder") { controller.revealConfigInFinder() }
                             Button("Copy path") { controller.copyConfigPath() }
                             Button("Export…") { controller.exportConfig() }
@@ -344,7 +363,7 @@ struct ContentView: View {
                         title: "config.json",
                         subtitle: "Edit JSON directly. Apply writes the file and updates the UI."
                     )
-                    WrappingHStack(spacing: 8) {
+                    ButtonRow {
                         Button("Reload from disk") { controller.reloadFromDisk() }
                             .buttonStyle(.bordered)
                         Button("Format from UI") { controller.saveConfig() }

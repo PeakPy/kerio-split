@@ -41,6 +41,10 @@ enum Brand {
     }
 
     static var logoImage: NSImage {
+        cachedLogo
+    }
+
+    private static let cachedLogo: NSImage = {
         if let url = Bundle.main.url(forResource: "MehradLogo", withExtension: "png"),
            let img = NSImage(contentsOf: url) {
             return img
@@ -49,7 +53,7 @@ enum Brand {
             .deletingLastPathComponent()
             .appendingPathComponent("KerioSplit/Assets.xcassets/MehradLogo.imageset/tom.h@example.org")
         return NSImage(contentsOf: fallback) ?? NSImage(size: NSSize(width: 48, height: 48))
-    }
+    }()
 }
 
 extension Color {

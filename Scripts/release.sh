@@ -67,9 +67,9 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.4.0</string>
+	<string>1.5.1</string>
 	<key>CFBundleVersion</key>
-	<string>40</string>
+	<string>51</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.utilities</string>
 	<key>LSMinimumSystemVersion</key>
@@ -90,6 +90,8 @@ swiftc -parse-as-library \
   "$ROOT/KerioSplit/KerioSplitApp.swift" \
   "$ROOT/KerioSplit/ContentView.swift" \
   "$ROOT/KerioSplit/OverviewDashboard.swift" \
+  "$ROOT/KerioSplit/MenuBarContent.swift" \
+  "$ROOT/KerioSplit/ResourceMonitor.swift" \
   "$ROOT/KerioSplit/TunnelController.swift" \
   "$ROOT/KerioSplit/Brand.swift" \
   "$ROOT/KerioSplit/AppConfig.swift" \
@@ -101,6 +103,8 @@ swiftc -parse-as-library \
   -framework SwiftUI \
   -framework AppKit \
   -framework Foundation \
+  -framework ServiceManagement \
+  -framework UserNotifications \
   -O
 
 codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
