@@ -27,10 +27,16 @@ struct KerioSplitApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {}
             CommandMenu("Kerio Split") {
-                Button(controller.isActive ? "Disconnect Split" : "Connect Split") {
-                    controller.toggle()
+                Button("Connect All") {
+                    controller.connectAll()
                 }
                 .keyboardShortcut("k", modifiers: [.command])
+                .disabled(!controller.canConnectAll)
+                Button("Disconnect All") {
+                    controller.disconnectAll()
+                }
+                .keyboardShortcut("k", modifiers: [.command, .shift])
+                .disabled(!controller.canDisconnectAll)
                 Divider()
                 Button("Reveal Config") { controller.revealConfigInFinder() }
                 Button("Export Config…") { controller.exportConfig() }
@@ -41,8 +47,7 @@ struct KerioSplitApp: App {
         MenuBarExtra(isInserted: $menuBarVisible) {
             MenuBarContent(controller: controller)
         } label: {
-            // Keep label static-ish to avoid extra scene invalidations.
-            Image(systemName: controller.isActive ? "bolt.horizontal.circle.fill" : "bolt.horizontal.circle")
+            Image(nsImage: Brand.menuBarImage)
         }
         .menuBarExtraStyle(.menu)
     }

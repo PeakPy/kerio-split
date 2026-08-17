@@ -10,115 +10,233 @@ struct OverviewDashboard: View {
         PageScroll {
             VStack(alignment: .leading, spacing: 16) {
                 heroBanner
-                resourceStrip
-                networkStrip
-                metricsRow
-                helperCard
-                shortcutsCard
+                processCard
+                liveRow
+                systemCard
+                workspaceRow
             }
         }
         .onAppear { resources.start() }
         .onDisappear { resources.stop() }
     }
 
-    // MARK: - Resources
+    // MARK: - Hero
 
-    private var resourceStrip: some View {
-        SurfaceCard(padding: 12) {
-            HStack(spacing: 10) {
-                resourceChip(
-                    title: "CPU",
-                    value: resources.cpuText,
-                    detail: "This app",
-                    icon: "gauge.with.dots.needle.67percent"
-                )
-                resourceChip(
-                    title: "App RAM",
-                    value: resources.appMemoryText,
-                    detail: "Resident",
-                    icon: "memorychip"
-                )
-                resourceChip(
-                    title: "System memory",
-                    value: String(format: "%.0f%%", resources.systemPercent),
-                    detail: resources.systemMemoryText,
-                    icon: "internaldrive"
-                )
-            }
-        }
-    }
+    private var heroBanner: some View {
+        ZStack(alignment: .bottomLeading) {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(Brand.heroGradient)
+            LinearGradient(
+                colors: [Color.white.opacity(0.18), Color.clear],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+            BrandLogo(size: 108, style: .mark, tint: .white)
+                .opacity(0.12)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .padding(10)
 
-    private func resourceChip(title: String, value: String, detail: String, icon: String) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: icon)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Brand.primary)
-                .frame(width: 28, height: 28)
-                .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(Brand.primary.opacity(0.12))
-                )
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title.uppercased())
-                    .font(.system(size: 9, weight: .bold, design: .rounded))
-                    .foregroundStyle(Brand.muted)
-                Text(value)
-                    .font(.system(size: 16, weight: .bold, design: .rounded))
-                    .foregroundStyle(Brand.ink)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                Text(detail)
-                    .font(.system(size: 10))
-                    .foregroundStyle(Brand.muted)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Brand.field)
-        )
-    }
-
-    // MARK: - Network strip
-
-    private var networkStrip: some View {
-        SurfaceCard(padding: 14) {
-            HStack(alignment: .center, spacing: 14) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(controller.kerioTunnelSeen
-                              ? Brand.primary.opacity(0.14)
-                              : Brand.field)
-                        .frame(width: 40, height: 40)
-                    Image(systemName: controller.kerioTunnelSeen ? "network" : "network.slash")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(controller.kerioTunnelSeen ? Brand.primary : Brand.muted)
+            VStack(alignment: .leading, spacing: 18) {
+                HStack(spacing: 8) {
+                    statusChip(title: controller.isActive ? "Split ON" : "Split OFF", lit: controller.isActive)
+                    statusChip(title: controller.helperReady ? "Helper" : "Allow once", lit: controller.helperReady)
+                    statusChip(title: controller.kerioTunnelSeen ? "VPN up" : "VPN down", lit: controller.kerioTunnelSeen)
+                    Spacer(minLength: 0)
+                    phaseBadge
                 }
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(controller.kerioTunnelSeen ? "Kerio tunnel detected" : "No Kerio tunnel yet")
+                HStack(alignment: .center, spacing: 14) {
+                    BrandLogo(size: 56, style: .badge)
+                        .overlay {
+                            if controller.sessionPhase == .connecting || controller.sessionPhase == .disconnecting {
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .stroke(Color.white.opacity(0.55), lineWidth: 1.5)
+                                    .modifier(SoftPulse())
+                            }
+                        }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Kerio Split")
+                            .font(.system(size: 26, weight: .bold, design: .rounded))
+                            .foregroundStyle(.white)
+                        Text("Mehrad Technical Team")
+                            .font(.system(size: 11, weight: .medium, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.7))
+                        Text(controller.statusText)
+                            .font(.system(size: 13, weight: .medium, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.9))
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                if !controller.helperReady {
+                    Button {
+                        controller.installHelper()
+                    } label: {
+                        Label("Allow once", systemImage: "key.fill")
+                            .font(.system(size: 13, weight: .semibold, design: .rounded))
+                            .foregroundStyle(Brand.deep)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 10)
+                            .background(Capsule().fill(Color.white))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(controller.isBusy)
+                }
+
+                DualActionBar(
+                    connectEnabled: controller.canConnectAll,
+                    disconnectEnabled: controller.canDisconnectAll,
+                    connecting: controller.sessionPhase == .connecting,
+                    disconnecting: controller.sessionPhase == .disconnecting,
+                    style: .hero,
+                    onConnect: { controller.connectAll() },
+                    onDisconnect: { controller.disconnectAll() }
+                )
+            }
+            .padding(22)
+        }
+        .frame(maxWidth: .infinity, minHeight: 228, alignment: .leading)
+        .shadow(color: Brand.deep.opacity(0.24), radius: 18, y: 8)
+        .animation(.spring(response: 0.42, dampingFraction: 0.86), value: controller.sessionPhase)
+        .animation(.spring(response: 0.42, dampingFraction: 0.86), value: controller.isActive)
+        .animation(.easeInOut(duration: 0.25), value: controller.statusText)
+    }
+
+    private var phaseBadge: some View {
+        Text(phaseTitle)
+            .font(.system(size: 10, weight: .bold, design: .rounded))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(Capsule().fill(Color.white.opacity(0.18)))
+    }
+
+    private var phaseTitle: String {
+        switch controller.sessionPhase {
+        case .idle: return "IDLE"
+        case .connecting: return "CONNECTING"
+        case .connected: return "ALL ON"
+        case .disconnecting: return "DISCONNECTING"
+        }
+    }
+
+    private func statusChip(title: String, lit: Bool) -> some View {
+        HStack(spacing: 6) {
+            ZStack {
+                if lit {
+                    Circle()
+                        .fill(Color.white.opacity(0.35))
+                        .frame(width: 14, height: 14)
+                        .modifier(SoftPulse())
+                        .id("pulse-\(title)")
+                }
+                Circle()
+                    .fill(lit ? Color.white : Color.white.opacity(0.4))
+                    .frame(width: 7, height: 7)
+            }
+            .frame(width: 14, height: 14)
+            Text(title)
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(
+            Capsule(style: .continuous)
+                .fill(Color.white.opacity(lit ? 0.22 : 0.14))
+        )
+        .animation(.easeInOut(duration: 0.3), value: lit)
+    }
+
+    // MARK: - Process
+
+    private var processCard: some View {
+        SurfaceCard {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(alignment: .top) {
+                    SectionLabel(
+                        title: processTitle,
+                        subtitle: processSubtitle
+                    )
+                    Spacer(minLength: 8)
+                    if controller.sessionPhase == .connecting {
+                        Button("Cancel") { controller.cancelConnectAll() }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                    }
+                }
+
+                ProcessTimeline(steps: controller.processSteps, phase: controller.sessionPhase)
+                    .animation(.spring(response: 0.44, dampingFraction: 0.86), value: controller.processSteps)
+            }
+        }
+    }
+
+    private var processTitle: String {
+        switch controller.sessionPhase {
+        case .idle: return "Connection process"
+        case .connecting: return "Turning everything on"
+        case .connected: return "All on"
+        case .disconnecting: return "Turning everything off"
+        }
+    }
+
+    private var processSubtitle: String {
+        switch controller.sessionPhase {
+        case .idle:
+            return controller.helperReady
+                ? "Connect All starts Kerio, waits for the tunnel, then applies split. Disconnect All reverses that."
+                : "Allow once first. After that, Connect All / Disconnect All stay passwordless."
+        case .connecting:
+            return "Official Kerio client → utun → split routes. Lights turn on in order."
+        case .connected:
+            return "Helper, Kerio session, tunnel, and split are all active."
+        case .disconnecting:
+            return "Split comes off first, then Kerio Disconnect. Lights turn off after the last step."
+        }
+    }
+
+    // MARK: - Live row
+
+    private var liveRow: some View {
+        HStack(alignment: .top, spacing: 12) {
+            SurfaceCard(padding: 14) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Label(controller.kerioTunnelSeen ? "VPN tunnel" : "No tunnel", systemImage: controller.kerioTunnelSeen ? "network" : "network.slash")
                         .font(.system(size: 13, weight: .semibold, design: .rounded))
-                        .foregroundStyle(Brand.ink)
+                        .foregroundStyle(controller.kerioTunnelSeen ? Brand.primary : Brand.muted)
                     Text(networkDetail)
                         .font(.system(size: 11))
                         .foregroundStyle(Brand.muted)
-                        .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 8) {
+                        Button("Probe") {
+                            controller.probeNetwork()
+                            controller.refreshHelperStatus(forceLog: true)
+                        }
+                        if !controller.kerioTunnelSeen {
+                            Button("Open Kerio") { controller.openKerioClient() }
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(controller.isBusy)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+            }
 
-                Button("Probe") {
-                    controller.probeNetwork()
-                    controller.refreshHelperStatus()
+            SurfaceCard(padding: 14) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("This Mac")
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Brand.ink)
+                    HStack(spacing: 8) {
+                        miniStat(title: "CPU", value: resources.cpuText)
+                        miniStat(title: "App RAM", value: resources.appMemoryText)
+                        miniStat(title: "Mem", value: String(format: "%.0f%%", resources.systemPercent))
+                    }
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(controller.isBusy)
             }
         }
     }
@@ -128,356 +246,113 @@ struct OverviewDashboard: View {
             let ifaces = controller.tunnelInterfaces.isEmpty
                 ? "utun"
                 : controller.tunnelInterfaces.joined(separator: ", ")
-            if controller.fullTunnelHijackSeen && !controller.isActive {
-                return "\(ifaces) · full-tunnel hijack still present — Connect Split to fix"
-            }
-            if controller.isActive {
-                return "\(ifaces) · split routes active"
-            }
-            return "\(ifaces) · connect split when ready"
+            if controller.isActive { return "\(ifaces) · split routes active" }
+            if controller.fullTunnelHijackSeen { return "\(ifaces) · full-tunnel hijack — Connect All to split" }
+            return "\(ifaces) · tap Connect All to apply split"
         }
-        return "Connect Kerio Control VPN Client, then enable split tunneling here."
+        return "Connect All opens the official Kerio client, then split."
     }
 
-    // MARK: - Hero
-
-    private var heroBanner: some View {
-        ZStack(alignment: .bottomLeading) {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Brand.heroGradient)
-                .overlay {
-                    // Soft light sweep — atmosphere, not clutter
-                    LinearGradient(
-                        colors: [
-                            Color.white.opacity(0.18),
-                            Color.white.opacity(0.02),
-                            Color.clear
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                }
-                .overlay(alignment: .topTrailing) {
-                    Image(nsImage: Brand.logoImage)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: 72, height: 72)
-                        .opacity(0.14)
-                        .padding(18)
-                }
-
-            VStack(alignment: .leading, spacing: 16) {
-                HStack(spacing: 10) {
-                    statusChip(
-                        title: controller.isActive ? "Split ON" : "Split OFF",
-                        lit: controller.isActive
-                    )
-                    statusChip(
-                        title: controller.helperReady ? "Helper" : "Setup",
-                        lit: controller.helperReady
-                    )
-                    statusChip(
-                        title: controller.kerioTunnelSeen ? "Kerio up" : "Kerio down",
-                        lit: controller.kerioTunnelSeen
-                    )
-                    Spacer(minLength: 0)
-                }
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Kerio Split")
-                        .font(.system(size: 28, weight: .bold, design: .rounded))
-                        .foregroundStyle(.white)
-
-                    Text(controller.statusText)
-                        .font(.system(size: 13, weight: .medium, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.88))
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                Button(action: { controller.toggle() }) {
-                    HStack(spacing: 8) {
-                        Image(systemName: controller.isBusy
-                              ? "hourglass"
-                              : (controller.isActive ? "link.badge.minus" : "bolt.fill"))
-                        Text(controller.isBusy
-                             ? "Working…"
-                             : (controller.isActive ? "Disconnect Split" : "Connect Split"))
-                            .font(.system(size: 14, weight: .semibold, design: .rounded))
-                    }
-                    .foregroundStyle(Brand.deep)
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 11)
-                    .background(
-                        Capsule(style: .continuous)
-                            .fill(.white)
-                    )
-                    .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
-                }
-                .buttonStyle(.plain)
-                .disabled(controller.isBusy)
-            }
-            .padding(22)
+    private func miniStat(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title.uppercased())
+                .font(.system(size: 9, weight: .bold, design: .rounded))
+                .foregroundStyle(Brand.muted)
+            Text(value)
+                .font(.system(size: 13, weight: .bold, design: .rounded))
+                .foregroundStyle(Brand.ink)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
         }
-        .frame(maxWidth: .infinity, minHeight: 200, alignment: .leading)
-        .shadow(color: Brand.deep.opacity(0.22), radius: 16, y: 8)
-    }
-
-    private func statusChip(title: String, lit: Bool) -> some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(lit ? Color.white : Color.white.opacity(0.45))
-                .frame(width: 7, height: 7)
-            Text(title)
-                .font(.system(size: 11, weight: .semibold, design: .rounded))
-                .foregroundStyle(.white)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(8)
         .background(
-            Capsule(style: .continuous)
-                .fill(Color.white.opacity(0.16))
-                .overlay(
-                    Capsule(style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.22), lineWidth: 1)
-                )
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Brand.field)
         )
     }
 
-    // MARK: - Metrics
+    // MARK: - System
 
-    private var metricsRow: some View {
-        LazyVGrid(
-            columns: [
-                GridItem(.flexible(), spacing: 12),
-                GridItem(.flexible(), spacing: 12),
-                GridItem(.flexible(), spacing: 12)
-            ],
-            spacing: 12
-        ) {
-            MetricTile(
-                title: "VPN routes",
-                value: "\(controller.config.vpnRoutes.count)",
-                icon: "point.3.connected.trianglepath.dotted",
-                hint: "Via Kerio",
-                action: { onNavigate(.vpnRoutes) }
-            )
-            MetricTile(
-                title: "Bypass",
-                value: "\(controller.config.bypassRoutes.count)",
-                icon: "arrow.triangle.branch",
-                hint: "LAN gateway",
-                action: { onNavigate(.bypass) }
-            )
-            MetricTile(
-                title: "Custom DNS",
-                value: "\(controller.config.options.customDns.count)",
-                icon: "network",
-                hint: "While split on",
-                action: { onNavigate(.settings) }
-            )
-        }
-    }
-
-    // MARK: - Helper
-
-    private var helperCard: some View {
+    private var systemCard: some View {
         SurfaceCard {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(alignment: .top, spacing: 14) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .fill(controller.helperReady
-                                  ? Brand.success.opacity(0.14)
-                                  : Brand.warn.opacity(0.14))
-                            .frame(width: 44, height: 44)
-                        Image(systemName: controller.helperReady
-                              ? "checkmark.shield.fill"
-                              : "lock.shield.fill")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundStyle(controller.helperReady ? Brand.success : Brand.warn)
-                    }
+            VStack(alignment: .leading, spacing: 12) {
+                SectionLabel(
+                    title: "System",
+                    subtitle: controller.helperReady
+                        ? "Route helper is passwordless. Connect All clicks the official Kerio client."
+                        : "Allow once installs the route helper. That is the only Mac password prompt."
+                )
 
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(controller.helperReady ? "Privileged helper ready" : "One-time helper setup")
-                            .font(.system(size: 15, weight: .semibold, design: .rounded))
-                            .foregroundStyle(Brand.ink)
-                        Text(
-                            controller.helperReady
-                                ? "Connect and disconnect without password prompts."
-                                : "Install once with your Mac password. Later actions stay silent."
-                        )
-                        .font(.system(size: 12))
-                        .foregroundStyle(Brand.muted)
+                HStack(spacing: 8) {
+                    systemPill(title: controller.helperReady ? "Helper ready" : "Helper needed", lit: controller.helperReady)
+                    systemPill(title: controller.canClickKerio ? "Can click Kerio" : "Accessibility off", lit: controller.canClickKerio)
+                    systemPill(title: "\(controller.config.vpnRoutes.count) VPN routes", lit: !controller.config.vpnRoutes.isEmpty)
+                }
+
+                if !controller.canClickKerio {
+                    Text("Enable this copy in Privacy → Accessibility, then Relaunch. An older Kerio Split toggle does not count.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Brand.warn)
                         .fixedSize(horizontal: false, vertical: true)
+                    Text(KerioLauncher.runningAppPath)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(Brand.muted)
+                        .textSelection(.enabled)
+                    ButtonRow {
+                        Button("Open Accessibility") { controller.grantClickKerio() }
+                            .buttonStyle(.borderedProminent)
+                            .tint(Brand.deep)
+                        Button("Relaunch") { controller.relaunchApp() }
+                            .buttonStyle(.bordered)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-
-                HStack(spacing: 0) {
-                    helperStep(number: "1", title: "Install", done: controller.helperReady)
-                    helperStepDivider(done: controller.helperReady)
-                    helperStep(number: "2", title: "Connect Kerio", done: true)
-                    helperStepDivider(done: controller.isActive)
-                    helperStep(number: "3", title: "Enable split", done: controller.isActive)
-                }
-                .padding(.vertical, 4)
 
                 ButtonRow {
-                    if controller.helperReady {
-                        Button("Uninstall helper") { controller.uninstallHelper() }
-                            .buttonStyle(.bordered)
-                        Button("Recheck") { controller.refreshHelperStatus() }
-                            .buttonStyle(.bordered)
-                        Button("Refresh routes") { controller.refreshStatus() }
-                            .buttonStyle(.bordered)
-                    } else {
-                        Button {
-                            controller.installHelper()
-                        } label: {
-                            Label("Install helper", systemImage: "key.fill")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(Brand.deep)
-                        Button("Recheck") { controller.refreshHelperStatus() }
-                            .buttonStyle(.bordered)
+                    if !controller.helperReady {
+                        Button("Allow once") { controller.installHelper() }
+                            .buttonStyle(.borderedProminent)
+                            .tint(Brand.deep)
                     }
+                    Button("Open Kerio") { controller.openKerioClient() }
+                        .buttonStyle(.bordered)
+                    Button("Recheck helper") { controller.refreshHelperStatus(forceLog: true) }
+                        .buttonStyle(.bordered)
+                    Button("VPN settings") { onNavigate(.settings) }
+                        .buttonStyle(.bordered)
                 }
                 .disabled(controller.isBusy)
             }
         }
     }
 
-    private func helperStep(number: String, title: String, done: Bool) -> some View {
-        VStack(spacing: 6) {
-            ZStack {
-                Circle()
-                    .fill(done ? Brand.primary.opacity(0.15) : Brand.field)
-                    .frame(width: 28, height: 28)
-                if done {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(Brand.primary)
-                } else {
-                    Text(number)
-                        .font(.system(size: 11, weight: .bold, design: .rounded))
-                        .foregroundStyle(Brand.muted)
-                }
-            }
-            Text(title)
-                .font(.system(size: 10, weight: .medium, design: .rounded))
-                .foregroundStyle(done ? Brand.ink : Brand.muted)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-        }
-        .frame(maxWidth: .infinity)
-    }
-
-    private func helperStepDivider(done: Bool) -> some View {
-        Rectangle()
-            .fill(done ? Brand.primary.opacity(0.35) : Brand.line)
-            .frame(height: 2)
-            .frame(maxWidth: 36)
-            .padding(.bottom, 16)
-    }
-
-    // MARK: - Shortcuts
-
-    private var shortcutsCard: some View {
-        SurfaceCard {
-            VStack(alignment: .leading, spacing: 12) {
-                SectionLabel(title: "Workspace", subtitle: "Jump to routes, config, or activity.")
-
-                LazyVGrid(
-                    columns: [
-                        GridItem(.flexible(), spacing: 10),
-                        GridItem(.flexible(), spacing: 10)
-                    ],
-                    spacing: 10
-                ) {
-                    ShortcutTile(
-                        title: "VPN Routes",
-                        subtitle: "Hosts via Kerio",
-                        icon: "point.3.connected.trianglepath.dotted",
-                        action: { onNavigate(.vpnRoutes) }
-                    )
-                    ShortcutTile(
-                        title: "Bypass",
-                        subtitle: "Stay on LAN",
-                        icon: "arrow.triangle.branch",
-                        action: { onNavigate(.bypass) }
-                    )
-                    ShortcutTile(
-                        title: "Settings",
-                        subtitle: "DNS & behavior",
-                        icon: "gearshape.fill",
-                        action: { onNavigate(.settings) }
-                    )
-                    ShortcutTile(
-                        title: "Activity",
-                        subtitle: "Engine log",
-                        icon: "list.bullet.rectangle",
-                        action: { onNavigate(.activity) }
-                    )
-                }
-            }
-        }
-    }
-}
-
-// MARK: - Tiles
-
-private struct MetricTile: View {
-    let title: String
-    let value: String
-    let icon: String
-    let hint: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Image(systemName: icon)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(Brand.primary)
-                        .frame(width: 28, height: 28)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(Brand.primary.opacity(0.12))
-                        )
-                    Spacer(minLength: 0)
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(Brand.muted)
-                }
-
-                Text(value)
-                    .font(.system(size: 26, weight: .bold, design: .rounded))
-                    .foregroundStyle(Brand.ink)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(.system(size: 12, weight: .semibold, design: .rounded))
-                        .foregroundStyle(Brand.ink)
-                    Text(hint)
-                        .font(.system(size: 10))
-                        .foregroundStyle(Brand.muted)
-                }
-            }
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
+    private func systemPill(title: String, lit: Bool) -> some View {
+        Text(title)
+            .font(.system(size: 11, weight: .semibold, design: .rounded))
+            .foregroundStyle(lit ? Brand.primary : Brand.muted)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
             .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(Brand.panel)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .strokeBorder(Brand.line, lineWidth: 1)
-                    )
+                Capsule()
+                    .fill(lit ? Brand.primary.opacity(0.12) : Brand.field)
             )
+    }
+
+    // MARK: - Workspace
+
+    private var workspaceRow: some View {
+        LazyVGrid(
+            columns: [
+                GridItem(.flexible(), spacing: 10),
+                GridItem(.flexible(), spacing: 10)
+            ],
+            spacing: 10
+        ) {
+            ShortcutTile(title: "VPN Routes", subtitle: "\(controller.config.vpnRoutes.count) via Kerio", icon: "point.3.connected.trianglepath.dotted", action: { onNavigate(.vpnRoutes) })
+            ShortcutTile(title: "Bypass", subtitle: "\(controller.config.bypassRoutes.count) stay on LAN", icon: "arrow.triangle.branch", action: { onNavigate(.bypass) })
+            ShortcutTile(title: "Settings", subtitle: "DNS & behavior", icon: "gearshape.fill", action: { onNavigate(.settings) })
+            ShortcutTile(title: "Activity", subtitle: "Engine log", icon: "list.bullet.rectangle", action: { onNavigate(.activity) })
         }
-        .buttonStyle(.plain)
     }
 }
 
@@ -498,7 +373,6 @@ private struct ShortcutTile: View {
                         RoundedRectangle(cornerRadius: 10, style: .continuous)
                             .fill(Brand.heroGradient)
                     )
-
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
                         .font(.system(size: 13, weight: .semibold, design: .rounded))
@@ -508,7 +382,6 @@ private struct ShortcutTile: View {
                         .foregroundStyle(Brand.muted)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-
                 Image(systemName: "arrow.up.right")
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(Brand.muted)
@@ -524,5 +397,20 @@ private struct ShortcutTile: View {
             )
         }
         .buttonStyle(.plain)
+    }
+}
+
+private struct SoftPulse: ViewModifier {
+    @State private var on = false
+
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(on ? 1.7 : 1)
+            .opacity(on ? 0 : 0.7)
+            .onAppear {
+                withAnimation(.easeOut(duration: 1.6).repeatForever(autoreverses: false)) {
+                    on = true
+                }
+            }
     }
 }

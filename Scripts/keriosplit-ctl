@@ -3,13 +3,17 @@
 # and allowed via /etc/sudoers.d/keriosplit (NOPASSWD) for the installing user.
 set -euo pipefail
 
+if [[ "${1:-}" == "ping" ]]; then
+  echo "keriosplit-ctl ping ok"
+  exit 0
+fi
+
 REAL_HOME="${SUDO_USER:+$(eval echo "~${SUDO_USER}")}"
 REAL_HOME="${REAL_HOME:-$HOME}"
 SUPPORT="${REAL_HOME}/Library/Application Support/KerioSplit"
 SCRIPT="$SUPPORT/Scripts/split-tunnel.sh"
 
 if [[ ! -x "$SCRIPT" ]]; then
-  # Fallback: same directory layout as repo / app bundle copy
   HERE="$(cd "$(dirname "$0")" && pwd)"
   if [[ -x "$HERE/split-tunnel.sh" ]]; then
     SCRIPT="$HERE/split-tunnel.sh"

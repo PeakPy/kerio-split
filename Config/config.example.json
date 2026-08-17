@@ -10,9 +10,13 @@
     "restoreLanDns": true,
     "customDns": [],
     "autoApplyOnLaunch": false,
+    "autoApplyWhenKerioConnects": true,
     "confirmBeforeDisconnect": true,
     "launchAtLogin": false,
     "showMenuBar": true,
-    "notifyOnChange": true
+    "notifyOnChange": true,
+    "connectBackend": "kerioClient",
+    "systemVPNName": "",
+    "openvpnConfigPath": ""
   }
 }

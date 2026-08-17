@@ -22,7 +22,9 @@ rm -rf "$STAGE"
 mkdir -p "$MACOS" "$RES" "$BUNDLE/Scripts" "$BUNDLE/Config" "$BUNDLE/Assets"
 
 cp "$ROOT/KerioSplit/Assets.xcassets/MehradLogo.imageset/tom.h@example.org" "$RES/MehradLogo.png"
+cp "$ROOT/KerioSplit/Assets.xcassets/MehradLogo.imageset/mehrad-mark.png" "$RES/MehradMark.png"
 cp "$ROOT/KerioSplit/Assets.xcassets/MehradLogo.imageset/tom.h@example.org" "$BUNDLE/Assets/MehradLogo.png"
+cp "$ROOT/KerioSplit/Assets.xcassets/MehradLogo.imageset/mehrad-mark.png" "$BUNDLE/Assets/MehradMark.png"
 cp "$ROOT/KerioSplit/Assets.xcassets/AppIcon.appiconset/icon_512.png" "$RES/AppIcon.png" 2>/dev/null || true
 cp "$ROOT/Scripts/split-tunnel.sh" "$BUNDLE/Scripts/"
 cp "$ROOT/Scripts/keriosplit-ctl" "$BUNDLE/Scripts/"
@@ -67,9 +69,9 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.5.1</string>
+	<string>1.7.5</string>
 	<key>CFBundleVersion</key>
-	<string>51</string>
+	<string>62</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.utilities</string>
 	<key>LSMinimumSystemVersion</key>
@@ -77,7 +79,9 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSAppleEventsUsageDescription</key>
-	<string>Kerio Split needs administrator privileges to update network routes.</string>
+	<string>Kerio Split uses System Events to click Connect or Disconnect in the official Kerio VPN Client, and asks once for your Mac password to install the route helper.</string>
+	<key>NSAccessibilityUsageDescription</key>
+	<string>Kerio Split clicks Connect or Disconnect in the official Kerio VPN Client menu extra, then applies or restores split. It does not implement the Kerio VPN protocol.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>Copyright © Mehrad Technical Team</string>
 </dict>
@@ -93,6 +97,9 @@ swiftc -parse-as-library \
   "$ROOT/KerioSplit/MenuBarContent.swift" \
   "$ROOT/KerioSplit/ResourceMonitor.swift" \
   "$ROOT/KerioSplit/TunnelController.swift" \
+  "$ROOT/KerioSplit/KerioLauncher.swift" \
+  "$ROOT/KerioSplit/KerioClientConfig.swift" \
+  "$ROOT/KerioSplit/StandardVPN.swift" \
   "$ROOT/KerioSplit/Brand.swift" \
   "$ROOT/KerioSplit/AppConfig.swift" \
   "$ROOT/KerioSplit/HelperService.swift" \
@@ -105,6 +112,7 @@ swiftc -parse-as-library \
   -framework Foundation \
   -framework ServiceManagement \
   -framework UserNotifications \
+  -framework ApplicationServices \
   -O
 
 codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true

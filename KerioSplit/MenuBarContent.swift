@@ -8,16 +8,41 @@ struct MenuBarContent: View {
 
     var body: some View {
         Group {
-            Text(controller.isActive ? "Split tunneling ON" : "Split tunneling OFF")
+            Text(controller.isActive ? "Split + VPN connected" : "Split tunneling OFF")
             Text(controller.menuBarSubtitle)
 
             Divider()
 
-            Button(controller.isActive ? "Disconnect Split" : "Connect Split") {
-                controller.toggleFromMenuBar()
+            Button("Connect All") {
+                controller.connectAll()
             }
             .keyboardShortcut("k", modifiers: [.command])
-            .disabled(controller.isBusy)
+            .disabled(!controller.canConnectAll)
+
+            if !controller.helperReady {
+                Button("Allow once") { controller.installHelper() }
+                    .disabled(controller.isBusy)
+            }
+
+            Button("Disconnect All") {
+                controller.disconnectAll()
+            }
+            .keyboardShortcut("k", modifiers: [.command, .shift])
+            .disabled(!controller.canDisconnectAll)
+
+            if !controller.isActive, controller.kerioTunnelSeen {
+                Button("Apply split only") {
+                    controller.apply()
+                }
+                .disabled(controller.isBusy)
+            }
+
+            if !controller.kerioTunnelSeen {
+                Button("Open Kerio VPN Client") {
+                    controller.openKerioClient()
+                }
+                .disabled(controller.isBusy)
+            }
 
             Button("Refresh status") {
                 controller.refreshStatus()

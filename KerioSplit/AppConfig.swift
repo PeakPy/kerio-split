@@ -16,6 +16,34 @@ enum AppearanceMode: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+/// How Connect All brings a tunnel up. Kerio proprietary protocol is never spoken here.
+enum ConnectBackend: String, Codable, CaseIterable, Identifiable {
+    case kerioClient
+    case systemVPN
+    case openvpnProfile
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .kerioClient: return "Kerio Control VPN Client"
+        case .systemVPN: return "macOS VPN (IPsec / IKEv2)"
+        case .openvpnProfile: return "OpenVPN profile"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .kerioClient:
+            return "Starts official Kerio client, then split. Kerio Split cannot log in or speak Kerio’s protocol."
+        case .systemVPN:
+            return "Starts a System Settings L2TP/IPsec VPN via scutil (GFI: article 118441). Admin must enable IPsec on Kerio Control."
+        case .openvpnProfile:
+            return "Opens a .ovpn from Kerio Control 9.5+ user portal (:4081) in Tunnelblick/Viscosity."
+        }
+    }
+}
+
 struct AppConfig: Codable, Equatable {
     var vpnRoutes: [String]
     var bypassRoutes: [String]
@@ -28,10 +56,14 @@ struct AppConfig: Codable, Equatable {
         var restoreLanDns: Bool
         var customDns: [String]
         var autoApplyOnLaunch: Bool
+        var autoApplyWhenKerioConnects: Bool
         var confirmBeforeDisconnect: Bool
         var launchAtLogin: Bool
         var showMenuBar: Bool
         var notifyOnChange: Bool
+        var connectBackend: ConnectBackend
+        var systemVPNName: String
+        var openvpnConfigPath: String
 
         static let `default` = Options(
             removeFullTunnel: true,
@@ -39,10 +71,14 @@ struct AppConfig: Codable, Equatable {
             restoreLanDns: true,
             customDns: [],
             autoApplyOnLaunch: false,
+            autoApplyWhenKerioConnects: true,
             confirmBeforeDisconnect: true,
             launchAtLogin: false,
             showMenuBar: true,
-            notifyOnChange: true
+            notifyOnChange: true,
+            connectBackend: .kerioClient,
+            systemVPNName: "",
+            openvpnConfigPath: ""
         )
 
         init(
@@ -51,20 +87,28 @@ struct AppConfig: Codable, Equatable {
             restoreLanDns: Bool,
             customDns: [String],
             autoApplyOnLaunch: Bool,
+            autoApplyWhenKerioConnects: Bool,
             confirmBeforeDisconnect: Bool,
             launchAtLogin: Bool,
             showMenuBar: Bool,
-            notifyOnChange: Bool
+            notifyOnChange: Bool,
+            connectBackend: ConnectBackend,
+            systemVPNName: String,
+            openvpnConfigPath: String
         ) {
             self.removeFullTunnel = removeFullTunnel
             self.restoreLanDefault = restoreLanDefault
             self.restoreLanDns = restoreLanDns
             self.customDns = customDns
             self.autoApplyOnLaunch = autoApplyOnLaunch
+            self.autoApplyWhenKerioConnects = autoApplyWhenKerioConnects
             self.confirmBeforeDisconnect = confirmBeforeDisconnect
             self.launchAtLogin = launchAtLogin
             self.showMenuBar = showMenuBar
             self.notifyOnChange = notifyOnChange
+            self.connectBackend = connectBackend
+            self.systemVPNName = systemVPNName
+            self.openvpnConfigPath = openvpnConfigPath
         }
 
         init(from decoder: Decoder) throws {
@@ -74,10 +118,14 @@ struct AppConfig: Codable, Equatable {
             restoreLanDns = try c.decodeIfPresent(Bool.self, forKey: .restoreLanDns) ?? true
             customDns = try c.decodeIfPresent([String].self, forKey: .customDns) ?? []
             autoApplyOnLaunch = try c.decodeIfPresent(Bool.self, forKey: .autoApplyOnLaunch) ?? false
+            autoApplyWhenKerioConnects = try c.decodeIfPresent(Bool.self, forKey: .autoApplyWhenKerioConnects) ?? true
             confirmBeforeDisconnect = try c.decodeIfPresent(Bool.self, forKey: .confirmBeforeDisconnect) ?? true
             launchAtLogin = try c.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? false
             showMenuBar = try c.decodeIfPresent(Bool.self, forKey: .showMenuBar) ?? true
             notifyOnChange = try c.decodeIfPresent(Bool.self, forKey: .notifyOnChange) ?? true
+            connectBackend = try c.decodeIfPresent(ConnectBackend.self, forKey: .connectBackend) ?? .kerioClient
+            systemVPNName = try c.decodeIfPresent(String.self, forKey: .systemVPNName) ?? ""
+            openvpnConfigPath = try c.decodeIfPresent(String.self, forKey: .openvpnConfigPath) ?? ""
         }
     }
 

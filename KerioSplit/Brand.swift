@@ -44,16 +44,81 @@ enum Brand {
         cachedLogo
     }
 
+    /// White-on-transparent Mehrad mark for tinting (sidebar, hero, menu bar).
+    static var markImage: NSImage {
+        cachedMark
+    }
+
+    static var menuBarImage: NSImage {
+        let img = cachedMark.copy() as? NSImage ?? cachedMark
+        img.size = NSSize(width: 18, height: 18)
+        img.isTemplate = true
+        return img
+    }
+
     private static let cachedLogo: NSImage = {
         if let url = Bundle.main.url(forResource: "MehradLogo", withExtension: "png"),
            let img = NSImage(contentsOf: url) {
             return img
         }
-        let fallback = Bundle.main.bundleURL
-            .deletingLastPathComponent()
-            .appendingPathComponent("KerioSplit/Assets.xcassets/MehradLogo.imageset/tom.h@example.org")
-        return NSImage(contentsOf: fallback) ?? NSImage(size: NSSize(width: 48, height: 48))
+        return markImage
     }()
+
+    private static let cachedMark: NSImage = {
+        let candidates = [
+            Bundle.main.url(forResource: "MehradMark", withExtension: "png"),
+            Bundle.main.url(forResource: "MehradLogo", withExtension: "png"),
+            URL(fileURLWithPath: #file)
+                .deletingLastPathComponent()
+                .appendingPathComponent("Assets.xcassets/MehradLogo.imageset/mehrad-mark.png")
+        ]
+        for url in candidates.compactMap({ $0 }) {
+            if let img = NSImage(contentsOf: url) {
+                img.isTemplate = true
+                return img
+            }
+        }
+        return NSImage(size: NSSize(width: 48, height: 48))
+    }()
+}
+
+/// Canonical Mehrad mark. Use this instead of SF Symbol stand-ins.
+struct BrandLogo: View {
+    enum Style {
+        case mark
+        case badge
+    }
+
+    var size: CGFloat = 32
+    var style: Style = .badge
+    var tint: Color = .white
+
+    var body: some View {
+        switch style {
+        case .mark:
+            Image(nsImage: Brand.markImage)
+                .resizable()
+                .renderingMode(.template)
+                .interpolation(.high)
+                .scaledToFit()
+                .foregroundStyle(tint)
+                .frame(width: size, height: size)
+        case .badge:
+            ZStack {
+                RoundedRectangle(cornerRadius: size * 0.22, style: .continuous)
+                    .fill(Brand.heroGradient)
+                Image(nsImage: Brand.markImage)
+                    .resizable()
+                    .renderingMode(.template)
+                    .interpolation(.high)
+                    .scaledToFit()
+                    .foregroundStyle(.white)
+                    .padding(size * 0.2)
+            }
+            .frame(width: size, height: size)
+            .shadow(color: Brand.deep.opacity(0.18), radius: 6, y: 2)
+        }
+    }
 }
 
 extension Color {

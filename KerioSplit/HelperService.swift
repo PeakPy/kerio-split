@@ -5,51 +5,107 @@ enum HelperService {
     static let ctlPath = "/usr/local/libexec/keriosplit-ctl"
     static let sudoersPath = "/etc/sudoers.d/keriosplit"
 
-    static var isInstalled: Bool {
+    static var filesPresent: Bool {
         FileManager.default.isExecutableFile(atPath: ctlPath)
             && FileManager.default.fileExists(atPath: sudoersPath)
     }
 
-    /// Must be called off the main thread.
+    static var isInstalled: Bool { filesPresent }
+
+    /// Must be called off the main thread. Uses `ping`, not `status`, so a missing
+    /// Kerio tunnel cannot look like a broken helper.
     static func canRunPasswordless() -> Bool {
-        guard isInstalled else { return false }
+        guard FileManager.default.isExecutableFile(atPath: ctlPath) else { return false }
         return runProcess(
             "/usr/bin/sudo",
-            ["-n", ctlPath, "status"],
-            timeoutSeconds: 3
+            ["-n", ctlPath, "ping"],
+            timeoutSeconds: 4
         ).ok
     }
 
-    /// Must be called off the main thread (except the AppleScript fallback, which shows a UI prompt).
-    static func runCtl(_ arguments: [String]) -> (ok: Bool, text: String) {
-        guard FileManager.default.isExecutableFile(atPath: ctlPath) else {
-            return (false, "Helper not installed")
+    /// Off the main thread. Explains why passwordless sudo is not working.
+    static func diagnose() -> String {
+        var lines: [String] = []
+        let user = NSUserName()
+        lines.append("macOS user: \(user)")
+        lines.append("ctl: \(ctlPath) \(FileManager.default.isExecutableFile(atPath: ctlPath) ? "present" : "MISSING")")
+        lines.append("sudoers: \(sudoersPath) \(FileManager.default.fileExists(atPath: sudoersPath) ? "present" : "MISSING")")
+
+        if FileManager.default.isExecutableFile(atPath: ctlPath) {
+            let ping = runProcess("/usr/bin/sudo", ["-n", ctlPath, "ping"], timeoutSeconds: 4)
+            if ping.ok {
+                lines.append("sudo -n ping: OK")
+            } else {
+                let text = ping.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                lines.append("sudo -n ping: FAILED")
+                if !text.isEmpty { lines.append(text) }
+                lines.append("Fix: tap Allow once so sudoers is written for \(user), not root.")
+            }
+        } else {
+            lines.append("Helper is not installed. Connect All must not be used until Allow once succeeds.")
         }
-        if FileManager.default.fileExists(atPath: sudoersPath) {
-            return runProcess("/usr/bin/sudo", ["-n", ctlPath] + arguments, timeoutSeconds: 20)
-        }
-        let joined = ([ctlPath] + arguments)
-            .map { "'\($0.replacingOccurrences(of: "'", with: "'\\''"))'" }
-            .joined(separator: " ")
-        return appleScriptAdmin("/usr/bin/sudo \(joined) 2>&1")
+        return lines.joined(separator: "\n")
     }
 
-    static func install(fromBundleScripts scriptsDir: URL) -> (ok: Bool, text: String) {
-        let installScript = scriptsDir.appendingPathComponent("install-helper.sh")
-        let path = installScript.path.replacingOccurrences(of: "'", with: "'\\''")
-        return appleScriptAdmin("/bin/bash '\(path)' 2>&1")
+    /// Must be called off the main thread.
+    static func runCtl(_ arguments: [String]) -> (ok: Bool, text: String) {
+        guard FileManager.default.isExecutableFile(atPath: ctlPath) else {
+            return (false, "Helper not installed — tap Allow once first")
+        }
+        let result = runProcess("/usr/bin/sudo", ["-n", ctlPath] + arguments, timeoutSeconds: 20)
+        if result.ok { return result }
+        if result.text.contains("password is required") || result.text.contains("a terminal is required") {
+            return (false, "Passwordless helper is not active.\n\(diagnose())")
+        }
+        return result
+    }
+
+    static func install(scriptPath: String, userName: String) -> (ok: Bool, text: String) {
+        guard FileManager.default.isReadableFile(atPath: scriptPath) else {
+            return (false, "Installer missing at \(scriptPath)")
+        }
+        let elevated = runAdmin(userName: userName, scriptPath: scriptPath)
+        guard elevated.ok else {
+            return (false, elevated.text.isEmpty ? "Allow once was cancelled or failed" : elevated.text)
+        }
+
+        // Proof, from this user, without AppleScript: sudoers actually matches.
+        let ping = runProcess("/usr/bin/sudo", ["-n", ctlPath, "ping"], timeoutSeconds: 4)
+        if ping.ok {
+            return (true, elevated.text)
+        }
+        let extra = ping.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (
+            false,
+            """
+            Installer ran but passwordless sudo still fails for \(userName).
+            \(elevated.text)
+            \(extra)
+            \(diagnose())
+            """
+        )
+    }
+
+    /// Must run on the main thread — shows the macOS password dialog.
+    @MainActor
+    static func installOnMainThread(scriptPath: String, userName: String) -> (ok: Bool, text: String) {
+        install(scriptPath: scriptPath, userName: userName)
+    }
+
+    @MainActor
+    static func uninstallOnMainThread() -> (ok: Bool, text: String) {
+        uninstall()
     }
 
     static func uninstall() -> (ok: Bool, text: String) {
-        let shell = """
-        rm -f '\(ctlPath)' '\(sudoersPath)' && echo uninstalled
+        let source = """
+        do shell script "rm -f '\(ctlPath)' '\(sudoersPath)' && echo uninstalled" with administrator privileges
         """
-        return appleScriptAdmin(shell)
+        return runAppleScript(source)
     }
 
     /// Blocking process runner — call only from a background queue.
     static func runProcess(_ exe: String, _ args: [String], timeoutSeconds: TimeInterval = 30) -> (ok: Bool, text: String) {
-        // Call only from a background queue — never block the UI / mouse cursor.
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: exe)
         proc.arguments = args
@@ -78,6 +134,33 @@ enum HelperService {
         } catch {
             return (false, error.localizedDescription)
         }
+    }
+
+    /// Apple TN2065: use `quoted form of` and `with administrator privileges` (not sudo).
+    /// Pass INSTALL_USER explicitly — elevation does not set SUDO_USER.
+    private static func runAdmin(userName: String, scriptPath: String) -> (ok: Bool, text: String) {
+        let source = """
+        set envUser to "\(appleEscape(userName))"
+        set scriptPath to "\(appleEscape(scriptPath))"
+        do shell script "INSTALL_USER=" & quoted form of envUser & " /bin/bash " & quoted form of scriptPath with administrator privileges
+        """
+        return runAppleScript(source)
+    }
+
+    private static func appleEscape(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+    }
+
+    private static func runAppleScript(_ source: String) -> (ok: Bool, text: String) {
+        var error: NSDictionary?
+        let result = NSAppleScript(source: source)?.executeAndReturnError(&error)
+        if let error {
+            let msg = (error["NSAppleScriptErrorMessage"] as? String) ?? "\(error)"
+            return (false, msg)
+        }
+        return (true, result?.stringValue ?? "")
     }
 }
 

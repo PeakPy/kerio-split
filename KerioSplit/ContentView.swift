@@ -17,11 +17,11 @@ struct ContentView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 780, minHeight: 560)
-        .alert("Disconnect split tunneling?", isPresented: $controller.showDisconnectConfirm) {
+        .alert("Disconnect All?", isPresented: $controller.showDisconnectConfirm) {
             Button("Cancel", role: .cancel) {}
-            Button("Disconnect", role: .destructive) { controller.confirmDisconnect() }
+            Button("Disconnect All", role: .destructive) { controller.confirmDisconnect() }
         } message: {
-            Text("Kerio VPN stays connected. Only the split routes are removed.")
+            Text("Removes split routes and clicks Disconnect in the official Kerio client (or stops L2TP/OpenVPN). If Accessibility is off, click Disconnect in Kerio yourself.")
         }
         .onAppear {
             controller.isBusy = false
@@ -44,16 +44,8 @@ struct ContentView: View {
                         .tag(item)
                 }
             } header: {
-                HStack(spacing: 10) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(Brand.heroGradient)
-                            .frame(width: 34, height: 34)
-                        Image(nsImage: Brand.logoImage)
-                            .resizable()
-                            .scaledToFit()
-                            .frame(width: 20, height: 20)
-                    }
+                HStack(spacing: 12) {
+                    BrandLogo(size: 36, style: .badge)
                     VStack(alignment: .leading, spacing: 1) {
                         Text("Kerio Split")
                             .font(.system(size: 13, weight: .bold, design: .rounded))
@@ -63,7 +55,7 @@ struct ContentView: View {
                             .foregroundStyle(Brand.deep.opacity(0.85))
                     }
                 }
-                .padding(.vertical, 4)
+                .padding(.vertical, 6)
                 .textCase(nil)
             }
         }
@@ -71,7 +63,7 @@ struct ContentView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(alignment: .leading, spacing: 6) {
                 StatusPill(
-                    text: controller.helperReady ? "Helper ready" : "Helper needed",
+                    text: controller.helperReady ? "Helper ready" : "Allow once needed",
                     active: controller.helperReady
                 )
                 StatusPill(
@@ -213,12 +205,159 @@ struct ContentView: View {
         PageScroll {
             VStack(alignment: .leading, spacing: 14) {
                 SurfaceCard {
+                    VStack(alignment: .leading, spacing: 12) {
+                        SectionLabel(
+                            title: "Route helper",
+                            subtitle: controller.helperDetail
+                        )
+
+                        HStack(spacing: 10) {
+                            Image(systemName: controller.helperReady ? "checkmark.shield.fill" : "lock.shield.fill")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundStyle(controller.helperReady ? Brand.success : Brand.warn)
+                            Text(controller.helperReady ? "Passwordless helper active" : "Allow once not verified yet")
+                                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                                .foregroundStyle(Brand.ink)
+                        }
+
+                        ButtonRow {
+                            if controller.helperReady {
+                                Button("Recheck helper") { controller.refreshHelperStatus(forceLog: true) }
+                                    .buttonStyle(.bordered)
+                                Button("Remove helper") { controller.uninstallHelper() }
+                                    .buttonStyle(.bordered)
+                            } else {
+                                Button {
+                                    controller.installHelper()
+                                } label: {
+                                    Label("Allow once", systemImage: "key.fill")
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .tint(Brand.deep)
+                                Button("Recheck") { controller.refreshHelperStatus(forceLog: true) }
+                                    .buttonStyle(.bordered)
+                            }
+                        }
+                        .disabled(controller.isBusy)
+                    }
+                }
+
+                SurfaceCard {
                     AppearancePicker(
                         mode: Binding(
                             get: { controller.config.appearance },
                             set: { controller.setAppearance($0) }
                         )
                     )
+                }
+
+                SurfaceCard {
+                    VStack(alignment: .leading, spacing: 12) {
+                        SectionLabel(
+                            title: "Kerio Control VPN Client",
+                            subtitle: "Connect All starts the official Kerio client, then split. Persistent writes only documented user.cfg flags (savePassword / persistent) — never the password blob. Not enabled by default."
+                        )
+
+                        Text(controller.kerioSaved.statusLine)
+                            .font(.system(size: 12, weight: .medium, design: .rounded))
+                            .foregroundStyle(Brand.ink)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        if !controller.kerioSaved.canEnablePersistent, controller.kerioSaved.configExists {
+                            Text("Check Save password in Kerio, connect once, then enable persistent here.")
+                                .font(.system(size: 11))
+                                .foregroundStyle(Brand.warn)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        ButtonRow {
+                            if controller.kerioSaved.persistent {
+                                Button("Disable persistent") {
+                                    controller.setKerioPersistent(false)
+                                }
+                                .buttonStyle(.bordered)
+                            } else {
+                                Button("Enable persistent") {
+                                    controller.setKerioPersistent(true)
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .tint(Brand.deep)
+                                .disabled(!controller.kerioSaved.canEnablePersistent)
+                            }
+                            Button("Open Kerio") {
+                                controller.openKerioClient()
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                        .disabled(controller.isBusy)
+                    }
+                }
+
+                SurfaceCard {
+                    VStack(alignment: .leading, spacing: 12) {
+                        SectionLabel(
+                            title: "Connect All backend",
+                            subtitle: controller.config.options.connectBackend.subtitle
+                        )
+
+                        Picker("Backend", selection: Binding(
+                            get: { controller.config.options.connectBackend },
+                            set: { controller.setConnectBackend($0) }
+                        )) {
+                            ForEach(ConnectBackend.allCases) { item in
+                                Text(item.title).tag(item)
+                            }
+                        }
+                        .pickerStyle(.radioGroup)
+                        .labelsHidden()
+
+                        Text(controller.standardVPN.summary)
+                            .font(.system(size: 11))
+                            .foregroundStyle(Brand.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        if !controller.standardVPN.scutilServices.isEmpty {
+                            Picker("macOS VPN", selection: Binding(
+                                get: { controller.config.options.systemVPNName },
+                                set: {
+                                    controller.config.options.systemVPNName = $0
+                                    controller.saveConfig(quiet: true)
+                                }
+                            )) {
+                                Text("Choose profile").tag("")
+                                ForEach(controller.standardVPN.scutilServices) { svc in
+                                    Text(svc.isKerioNetworkExtension
+                                         ? "\(svc.name) (\(svc.state) · Kerio NE — do not scutil start)"
+                                         : "\(svc.name) (\(svc.state))").tag(svc.name)
+                                }
+                            }
+                            .labelsHidden()
+                        } else if controller.config.options.connectBackend == .systemVPN {
+                            Text("No System Settings VPN profiles. Add L2TP over IPsec (GFI article 118441), or ask the Kerio admin to enable IPsec.")
+                                .font(.system(size: 11))
+                                .foregroundStyle(Brand.muted)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        if controller.config.options.connectBackend == .openvpnProfile {
+                            Text(
+                                controller.config.options.openvpnConfigPath.isEmpty
+                                    ? "No .ovpn selected."
+                                    : controller.config.options.openvpnConfigPath
+                            )
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(Brand.muted)
+                            .lineLimit(3)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                            Button("Choose .ovpn…") {
+                                controller.pickOpenVPNProfile()
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(controller.isBusy)
+                        }
+                    }
                 }
 
                 SurfaceCard {
@@ -255,7 +394,7 @@ struct ContentView: View {
                         Divider()
                         SettingsToggle(
                             title: "Auto-apply on launch",
-                            subtitle: "Apply split automatically when the app opens (helper required).",
+                            subtitle: "Run Connect All when the app opens (helper required).",
                             isOn: Binding(
                                 get: { controller.config.options.autoApplyOnLaunch },
                                 set: { controller.config.options.autoApplyOnLaunch = $0; controller.saveConfig() }
@@ -263,8 +402,20 @@ struct ContentView: View {
                         )
                         Divider()
                         SettingsToggle(
+                            title: "Auto-apply when Kerio connects",
+                            subtitle: "Apply split automatically when a Kerio tunnel appears.",
+                            isOn: Binding(
+                                get: { controller.config.options.autoApplyWhenKerioConnects },
+                                set: {
+                                    controller.config.options.autoApplyWhenKerioConnects = $0
+                                    controller.saveConfig()
+                                }
+                            )
+                        )
+                        Divider()
+                        SettingsToggle(
                             title: "Confirm before disconnect",
-                            subtitle: "Ask once before tearing down split routes.",
+                            subtitle: "Ask once before Disconnect All (split + VPN session).",
                             isOn: Binding(
                                 get: { controller.config.options.confirmBeforeDisconnect },
                                 set: { controller.config.options.confirmBeforeDisconnect = $0; controller.saveConfig() }
@@ -342,7 +493,7 @@ struct ContentView: View {
                         Text("Kerio Split \(controller.appVersion)")
                             .font(.system(size: 13, weight: .semibold, design: .rounded))
                             .foregroundStyle(Brand.ink)
-                        Text("Mehrad Technical Team · Split tunneling for Kerio Control VPN Client")
+                        Text("Mehrad Technical Team · Starts official Kerio client, then split. Not a Kerio protocol client.")
                             .font(.system(size: 12))
                             .foregroundStyle(Brand.muted)
                             .fixedSize(horizontal: false, vertical: true)
