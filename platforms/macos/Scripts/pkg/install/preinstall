@@ -1,0 +1,17 @@
+#!/bin/bash
+# Runs as root before payload copy.
+# Ensures a clean /Applications install (no relocated / leftover copies).
+set -euo pipefail
+
+killall KerioSplit >/dev/null 2>&1 || true
+sleep 0.3
+killall -9 KerioSplit >/dev/null 2>&1 || true
+
+# Always install into /Applications — never leave an old relocated copy behind.
+rm -rf "/Applications/KerioSplit.app" "/Applications/Kerio Split.app"
+
+# Drop stale receipts so Installer does not think an upgrade-noop is enough.
+pkgutil --forget "dev.ehsanakbari.KerioSplit" >/dev/null 2>&1 || true
+pkgutil --forget "ir.mehrad.KerioSplit" >/dev/null 2>&1 || true
+
+exit 0

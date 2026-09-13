@@ -1,0 +1,101 @@
+#!/bin/bash
+# Uninstall Kerio Split: app, privileged helper, sudoers, receipts, support files.
+# Invoked as root by the uninstall .pkg (nopayload).
+set -euo pipefail
+
+CTL="/usr/local/libexec/keriosplit-ctl"
+SUDOERS="/etc/sudoers.d/keriosplit"
+PKG_ID="dev.ehsanakbari.KerioSplit"
+UNINSTALL_PKG_ID="dev.ehsanakbari.KerioSplit.uninstall"
+LEGACY_PKG_ID="ir.mehrad.KerioSplit"
+LEGACY_UNINSTALL_PKG_ID="ir.mehrad.KerioSplit.uninstall"
+
+log() { echo "Kerio Split uninstall: $*"; }
+
+# Prefer the console login user; fall back to installer / sudo user.
+USER_NAME="${USER:-}"
+if [[ -z "$USER_NAME" || "$USER_NAME" == "root" ]]; then
+  USER_NAME="$(stat -f%Su /dev/console 2>/dev/null || true)"
+fi
+if [[ -z "$USER_NAME" || "$USER_NAME" == "root" ]]; then
+  USER_NAME="${SUDO_USER:-}"
+fi
+
+killall KerioSplit >/dev/null 2>&1 || true
+sleep 0.4
+killall -9 KerioSplit >/dev/null 2>&1 || true
+
+# Remove every known app location (relocated installs + Applications).
+APP_CANDIDATES=(
+  "/Applications/KerioSplit.app"
+  "/Applications/Kerio Split.app"
+)
+if [[ -n "$USER_NAME" && "$USER_NAME" != "root" && "$USER_NAME" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  REAL_HOME="$(dscl . -read "/Users/${USER_NAME}" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
+  if [[ -z "$REAL_HOME" || ! -d "$REAL_HOME" ]]; then
+    REAL_HOME="$(eval echo "~${USER_NAME}")"
+  fi
+  if [[ -n "$REAL_HOME" && -d "$REAL_HOME" ]]; then
+    APP_CANDIDATES+=(
+      "${REAL_HOME}/Applications/KerioSplit.app"
+      "${REAL_HOME}/Applications/Kerio Split.app"
+      "${REAL_HOME}/Downloads/KerioSplit.app"
+      "${REAL_HOME}/Desktop/KerioSplit.app"
+    )
+  fi
+fi
+
+# Also wipe paths recorded in the install receipt (handles relocated bundles).
+if pkgutil --pkg-info "$PKG_ID" >/dev/null 2>&1; then
+  while IFS= read -r rel; do
+    [[ -z "$rel" ]] && continue
+    # Only delete under Applications / known prefixes for safety.
+    case "$rel" in
+      Applications/KerioSplit.app|Applications/KerioSplit.app/*|Applications/Kerio\ Split.app|Applications/Kerio\ Split.app/*)
+        rm -rf "/${rel}"
+        ;;
+    esac
+  done < <(pkgutil --files "$PKG_ID" 2>/dev/null || true)
+fi
+
+for app in "${APP_CANDIDATES[@]}"; do
+  if [[ -e "$app" ]]; then
+    log "removing $app"
+    rm -rf "$app"
+  fi
+done
+
+# Spotlight may still know about project/dev copies — do not delete those.
+# Only remove helper + sudoers system files.
+rm -f "$CTL" "$SUDOERS"
+[[ -f "$CTL" || -f "$SUDOERS" ]] && log "warning: helper files still present" || log "helper removed"
+
+if [[ -n "$USER_NAME" && "$USER_NAME" != "root" && "$USER_NAME" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  REAL_HOME="$(dscl . -read "/Users/${USER_NAME}" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
+  if [[ -z "$REAL_HOME" || ! -d "$REAL_HOME" ]]; then
+    REAL_HOME="$(eval echo "~${USER_NAME}")"
+  fi
+  if [[ -n "$REAL_HOME" && -d "$REAL_HOME" ]]; then
+    rm -rf "${REAL_HOME}/Library/Application Support/KerioSplit"
+    rm -rf "${REAL_HOME}/Library/Caches/dev.ehsanakbari.KerioSplit"
+    rm -rf "${REAL_HOME}/Library/Preferences/dev.ehsanakbari.KerioSplit.plist"
+    rm -rf "${REAL_HOME}/Library/Saved Application State/dev.ehsanakbari.KerioSplit.savedState"
+    rm -rf "${REAL_HOME}/Library/Caches/ir.mehrad.KerioSplit"
+    rm -rf "${REAL_HOME}/Library/Preferences/ir.mehrad.KerioSplit.plist"
+    rm -rf "${REAL_HOME}/Library/Saved Application State/ir.mehrad.KerioSplit.savedState"
+    log "cleared support files for ${USER_NAME}"
+  fi
+fi
+
+pkgutil --forget "$PKG_ID" >/dev/null 2>&1 || true
+pkgutil --forget "$UNINSTALL_PKG_ID" >/dev/null 2>&1 || true
+pkgutil --forget "$LEGACY_PKG_ID" >/dev/null 2>&1 || true
+pkgutil --forget "$LEGACY_UNINSTALL_PKG_ID" >/dev/null 2>&1 || true
+
+if [[ -d "/Applications/KerioSplit.app" || -d "/Applications/Kerio Split.app" ]]; then
+  log "ERROR: app still present in /Applications"
+  exit 1
+fi
+
+log "complete"
+exit 0

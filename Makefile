@@ -1,19 +1,30 @@
-.PHONY: build release dmg clean
+.PHONY: build release dmg pkg clean open help version
 
-ROOT := $(CURDIR)
-DIST := $(ROOT)/dist
-APP  := $(DIST)/KerioSplit.app
+MACOS := platforms/macos
+
+help:
+	@echo "Kerio Split"
+	@echo "  make build    macOS app → dist/KerioSplit.app"
+	@echo "  make release  pkg + uninstall pkg + DMG → dist/"
+	@echo "  make version  print VERSION"
+	@echo "  make clean    remove dist/"
+
+version:
+	@cat VERSION
 
 build:
-	@$(ROOT)/Scripts/release.sh --app-only
+	@$(MAKE) -C $(MACOS) build
 
 release:
-	@$(ROOT)/Scripts/release.sh
+	@$(MAKE) -C $(MACOS) release
 
 dmg: release
 
-clean:
-	rm -rf "$(DIST)"
+pkg: release
 
-open: build
-	open "$(APP)"
+clean:
+	@$(MAKE) -C $(MACOS) clean
+	rm -rf dist
+
+open:
+	@$(MAKE) -C $(MACOS) open

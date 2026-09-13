@@ -10,7 +10,8 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-ROOT="$(cd "$HERE/.." && pwd)"
+PLATFORM="$(cd "$HERE/.." && pwd)"
+REPO="$(cd "$HERE/../../.." && pwd)"
 
 USER_NAME="${INSTALL_USER:-${SUDO_USER:-}}"
 if [[ -z "$USER_NAME" || "$USER_NAME" == "root" ]]; then
@@ -41,8 +42,8 @@ SUDOERS="/etc/sudoers.d/keriosplit"
 
 SRC_CTL="$HERE/keriosplit-ctl"
 SRC_ENGINE="$HERE/split-tunnel.sh"
-[[ -x "$SRC_CTL" ]] || SRC_CTL="$ROOT/Scripts/keriosplit-ctl"
-[[ -x "$SRC_ENGINE" ]] || SRC_ENGINE="$ROOT/Scripts/split-tunnel.sh"
+[[ -x "$SRC_CTL" ]] || SRC_CTL="$PLATFORM/Scripts/keriosplit-ctl"
+[[ -x "$SRC_ENGINE" ]] || SRC_ENGINE="$PLATFORM/Scripts/split-tunnel.sh"
 [[ -x "$SRC_CTL" ]] || { echo "missing keriosplit-ctl next to installer"; exit 1; }
 [[ -x "$SRC_ENGINE" ]] || { echo "missing split-tunnel.sh next to installer"; exit 1; }
 
@@ -60,17 +61,22 @@ chown root:wheel "$CTL"
 chown -R "${USER_NAME}:staff" "$SUPPORT"
 
 if [[ ! -f "$SUPPORT/Config/config.json" ]]; then
-  if [[ -f "$ROOT/Config/config.example.json" ]]; then
-    cp "$ROOT/Config/config.example.json" "$SUPPORT/Config/config.json"
-  elif [[ -f "$SUPPORT/Config/config.example.json" ]]; then
-    cp "$SUPPORT/Config/config.example.json" "$SUPPORT/Config/config.json"
-  fi
+  for example in \
+    "$HERE/../Config/config.example.json" \
+    "$REPO/config/config.example.json" \
+    "$SUPPORT/Config/config.example.json"
+  do
+    if [[ -f "$example" ]]; then
+      cp "$example" "$SUPPORT/Config/config.json"
+      break
+    fi
+  done
   [[ -f "$SUPPORT/Config/config.json" ]] && chown "${USER_NAME}:staff" "$SUPPORT/Config/config.json"
 fi
 
 TMP_SUDOERS="$(mktemp /tmp/keriosplit-sudoers.XXXXXX)"
 cat > "$TMP_SUDOERS" <<EOF
-# Kerio Split — Mehrad Technical Team
+# Kerio Split — Ehsan Akbari
 # Narrow NOPASSWD: only this binary, only this user.
 # Filename has no '.' so sudo's includedir will actually read it.
 ${USER_NAME} ALL=(root) NOPASSWD: ${CTL}

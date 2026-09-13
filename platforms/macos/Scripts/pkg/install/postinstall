@@ -1,0 +1,23 @@
+#!/bin/bash
+# Runs as root after KerioSplit.app is copied to /Applications.
+# Clears quarantine so first launch is less painful for unsigned builds.
+# Helper (sudoers + ctl) remains in-app via "Install route helper".
+set -euo pipefail
+
+APP="/Applications/KerioSplit.app"
+if [[ -d "$APP" ]]; then
+  xattr -cr "$APP" >/dev/null 2>&1 || true
+  chmod -R a+rX "$APP" >/dev/null 2>&1 || true
+  /usr/bin/codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
+  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
+    -f "$APP" >/dev/null 2>&1 || true
+fi
+
+# Prove install landed where users expect (Installer log / install.log).
+if [[ ! -x "$APP/Contents/MacOS/KerioSplit" ]]; then
+  echo "Kerio Split postinstall: app missing at $APP" >&2
+  exit 1
+fi
+
+echo "Kerio Split installed at $APP"
+exit 0

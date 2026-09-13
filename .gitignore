@@ -1,9 +1,12 @@
 # Build artifacts
 /dist/
+/dist-*/
 /build/
 *.dmg
 *.zip
-*.app/
+*.pkg
+# Never commit built app bundles at repo root / dist
+/**/KerioSplit.app/
 
 # OS / editor
 .DS_Store
@@ -24,10 +27,12 @@ xcuserdata/
 *.dSYM.zip
 *.dSYM
 
-# Local runtime state (never commit)
+# Local runtime state
 Diagnostics/
 **/saved-routes.env
+**/config.json
+!config/config.example.json
 
-# Python bytecode (if any tooling added later)
+# Branding working copies (masters stay under assets/branding/logo/)
 __pycache__/
 *.pyc

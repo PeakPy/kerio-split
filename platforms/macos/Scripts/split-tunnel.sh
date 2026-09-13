@@ -5,7 +5,7 @@
 # Usage: sudo ./Scripts/split-tunnel.sh capture|apply|restore|status
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+REPO="$(cd "$(dirname "$0")/../../.." && pwd)"
 REAL_HOME="${SUDO_USER:+$(eval echo "~${SUDO_USER}")}"
 REAL_HOME="${REAL_HOME:-$HOME}"
 SUPPORT="${REAL_HOME}/Library/Application Support/KerioSplit"
@@ -29,8 +29,10 @@ if [[ -z "$CONFIG_FILE" ]]; then
   for c in \
     "$SUPPORT/Config/config.json" \
     "$FALLBACK/Config/config.json" \
-    "$ROOT/Config/config.json" \
-    "$ROOT/Config/config.example.json"
+    "$(cd "$(dirname "$0")/.." && pwd)/Config/config.json" \
+    "$(cd "$(dirname "$0")/.." && pwd)/Config/config.example.json" \
+    "$REPO/config/config.json" \
+    "$REPO/config/config.example.json"
   do
     if [[ -f "$c" ]]; then CONFIG_FILE="$c"; break; fi
   done
@@ -38,7 +40,8 @@ fi
 
 # Legacy targets.txt still supported if no JSON
 TARGETS_TXT="$SUPPORT/Config/targets.txt"
-[[ -f "$TARGETS_TXT" ]] || TARGETS_TXT="$ROOT/Config/targets.txt"
+[[ -f "$TARGETS_TXT" ]] || TARGETS_TXT="$(cd "$(dirname "$0")/.." && pwd)/Config/targets.txt"
+[[ -f "$TARGETS_TXT" ]] || TARGETS_TXT="$REPO/config/targets.txt"
 
 log() { echo "[KerioSplit] $*"; }
 die() { echo "[KerioSplit] ERROR: $*" >&2; exit 1; }

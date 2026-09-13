@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="2">
+    <title>Uninstall Kerio Split</title>
+    <organization>dev.ehsanakbari</organization>
+    <domains enable_anywhere="false" enable_currentUserHome="false" enable_localSystem="true"/>
+    <options customize="never" require-scripts="true" rootVolumeOnly="true"/>
+    <welcome file="welcome.html" mime-type="text/html"/>
+    <conclusion file="conclusion.html" mime-type="text/html"/>
+    <pkg-ref id="dev.ehsanakbari.KerioSplit.uninstall"/>
+    <choices-outline>
+        <line choice="default"/>
+    </choices-outline>
+    <choice id="default" title="Uninstall" visible="false">
+        <pkg-ref id="dev.ehsanakbari.KerioSplit.uninstall"/>
+    </choice>
+    <pkg-ref id="dev.ehsanakbari.KerioSplit.uninstall" version="1.7.6" auth="Root" onConclusion="none">KerioSplit-uninstall-component.pkg</pkg-ref>
+</installer-gui-script>
