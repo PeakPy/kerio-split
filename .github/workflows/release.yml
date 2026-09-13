@@ -1,0 +1,27 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  macos-artifacts:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build release packages
+        run: make release
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/KerioSplit.pkg
+            dist/KerioSplit-Uninstall.pkg
+            dist/KerioSplit.dmg
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  shell-syntax:
+    name: Shell syntax
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: bash -n
+        run: |
+          set -euo pipefail
+          while IFS= read -r f; do
+            echo "check $f"
+            bash -n "$f"
+          done < <(
+            find platforms/macos/Scripts scripts -type f \( \
+              -name '*.sh' -o -name 'keriosplit-ctl' \
+              -o -name 'preinstall' -o -name 'postinstall' \
+            \) 2>/dev/null
+          )
+
+  config-example:
+    name: Example config JSON
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m json.tool config/config.example.json > /dev/null
+
+  version-file:
+    name: VERSION present
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: non-empty VERSION
+        run: |
+          V="$(tr -d '[:space:]' < VERSION)"
+          test -n "$V"
+          echo "VERSION=$V"

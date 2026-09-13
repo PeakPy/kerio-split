@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security policy
+    url: https://github.com/PeakPy/kerio-split/blob/main/SECURITY.md
+    about: Read how to report vulnerabilities privately before filing a public issue.
