@@ -13,5 +13,5 @@
     <choice id="default" visible="false">
         <pkg-ref id="dev.ehsanakbari.KerioSplit"/>
     </choice>
-    <pkg-ref id="dev.ehsanakbari.KerioSplit" version="1.7.6" auth="Root" onConclusion="none">KerioSplit-component.pkg</pkg-ref>
+    <pkg-ref id="dev.ehsanakbari.KerioSplit" version="__VERSION__" auth="Root" onConclusion="none">KerioSplit-component.pkg</pkg-ref>
 </installer-gui-script>

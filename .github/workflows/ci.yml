@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
 
 jobs:
@@ -31,13 +31,16 @@ jobs:
       - uses: actions/checkout@v4
       - run: python3 -m json.tool config/config.example.json > /dev/null
 
-  version-file:
-    name: VERSION present
+  version-sync:
+    name: VERSION is single source
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: non-empty VERSION
+      - name: Info.plist and fallback match VERSION
         run: |
+          set -euo pipefail
           V="$(tr -d '[:space:]' < VERSION)"
           test -n "$V"
-          echo "VERSION=$V"
+          grep -F "<string>${V}</string>" platforms/macos/KerioSplit/Info.plist | wc -l | grep -q '^[ ]*2$'
+          grep -F "?? \"${V}\"" platforms/macos/KerioSplit/TunnelController.swift
+          echo "VERSION=$V OK"

@@ -15,7 +15,8 @@ SCRIPTS="$PLATFORM/Scripts"
 CONFIG="$REPO/config"
 VERSION_FILE="$REPO/VERSION"
 PKG_VERSION="$(tr -d '[:space:]' < "$VERSION_FILE")"
-PKG_BUILD="${PKG_BUILD:-63}"
+# Single public version everywhere (marketing + bundle build).
+PKG_BUILD="${PKG_BUILD:-$PKG_VERSION}"
 PKG_ID="dev.ehsanakbari.KerioSplit"
 UNINSTALL_PKG_ID="dev.ehsanakbari.KerioSplit.uninstall"
 INSTALL_PKG="$DIST/KerioSplit.pkg"
@@ -180,7 +181,7 @@ mkdir -p "$DIST_RESOURCES"
 cp "$SCRIPTS/pkg/welcome.html" "$DIST_RESOURCES/"
 cp "$SCRIPTS/pkg/conclusion.html" "$DIST_RESOURCES/"
 # distribution.xml references the component by relative name in --package-path
-sed "s/version=\"1\\.7\\.[0-9]*\"/version=\"$PKG_VERSION\"/" \
+sed "s/version=\"__VERSION__\"/version=\"$PKG_VERSION\"/" \
   "$SCRIPTS/pkg/distribution.xml" > "$DIST/distribution.xml"
 
 productbuild \
@@ -204,7 +205,7 @@ rm -rf "$UNINSTALL_RESOURCES"
 mkdir -p "$UNINSTALL_RESOURCES"
 cp "$SCRIPTS/pkg/uninstall-welcome.html" "$UNINSTALL_RESOURCES/welcome.html"
 cp "$SCRIPTS/pkg/uninstall-conclusion.html" "$UNINSTALL_RESOURCES/conclusion.html"
-sed "s/version=\"1\\.7\\.[0-9]*\"/version=\"$PKG_VERSION\"/" \
+sed "s/version=\"__VERSION__\"/version=\"$PKG_VERSION\"/" \
   "$SCRIPTS/pkg/uninstall-distribution.xml" > "$DIST/uninstall-distribution.xml"
 
 productbuild \

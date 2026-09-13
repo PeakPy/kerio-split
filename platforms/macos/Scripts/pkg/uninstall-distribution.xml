@@ -13,5 +13,5 @@
     <choice id="default" title="Uninstall" visible="false">
         <pkg-ref id="dev.ehsanakbari.KerioSplit.uninstall"/>
     </choice>
-    <pkg-ref id="dev.ehsanakbari.KerioSplit.uninstall" version="1.7.6" auth="Root" onConclusion="none">KerioSplit-uninstall-component.pkg</pkg-ref>
+    <pkg-ref id="dev.ehsanakbari.KerioSplit.uninstall" version="__VERSION__" auth="Root" onConclusion="none">KerioSplit-uninstall-component.pkg</pkg-ref>
 </installer-gui-script>
