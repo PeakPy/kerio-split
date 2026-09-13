@@ -4,8 +4,11 @@ Keep changes small and reviewable. Privileged networking code (`split-tunnel`, h
 
 ## Branches
 
-- `main` — default branch; release from here
-- Feature work: `feat/…`, `fix/…`, `docs/…` off `main`
+- `main` — stable; releases and tags come from here
+- `develop` — ongoing work and testing before merge to `main`
+- Feature work: `feat/…`, `fix/…`, `docs/…` off `develop` (or `main` for tiny docs fixes)
+
+Open PRs into `develop` for normal changes; merge `develop` → `main` when shipping a release.
 
 ## Setup (macOS)
 
