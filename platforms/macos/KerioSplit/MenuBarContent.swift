@@ -102,8 +102,6 @@ enum AppWindows {
         Version \(version)
 
         Companion for Kerio Control VPN — applies split routes after a real tunnel is up. Not a Kerio protocol client.
-
-        Open source · \(Brand.credit)
         """
         alert.alertStyle = .informational
         alert.addButton(withTitle: "OK")

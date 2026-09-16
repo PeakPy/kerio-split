@@ -498,10 +498,6 @@ struct ContentView: View {
                             .font(.system(size: 12))
                             .foregroundStyle(Brand.muted)
                             .fixedSize(horizontal: false, vertical: true)
-                        Text("Open source · \(Brand.credit)")
-                            .font(.system(size: 11))
-                            .foregroundStyle(Brand.muted.opacity(0.85))
-                            .padding(.top, 2)
                     }
                 }
             }

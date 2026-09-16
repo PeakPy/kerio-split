@@ -26,8 +26,6 @@ enum Brand {
     static let field = Color(light: Color(red: 0xef / 255, green: 0xf6 / 255, blue: 0xfb / 255),
                              dark: Color(red: 0x1a / 255, green: 0x22 / 255, blue: 0x33 / 255))
 
-    static let credit = "Ehsan Akbari"
-
     static var heroGradient: LinearGradient {
         LinearGradient(
             colors: [deep, deepLift, Color(red: 0x0e / 255, green: 0x4a / 255, blue: 0x6e / 255)],
