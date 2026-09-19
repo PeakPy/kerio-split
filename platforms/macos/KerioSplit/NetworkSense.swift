@@ -30,10 +30,10 @@ struct NetworkSnapshot: Equatable {
     var vpnSessions: [VPNSession] = []
 
     var hasKerioTunnel: Bool {
+        // Live evidence only — a stale saved gateway must NOT count as "up".
         kerioSessionConnected
             || fullTunnelHijack
             || !kerioInterface.isEmpty
-            || !kerioGateway.isEmpty
             || !managedRoutesPresent.isEmpty
     }
 
@@ -180,14 +180,10 @@ enum NetworkSense {
             }
         }
 
-        // 5) Last resort: first non-ignored tun with IPv4 (only if daemon up)
-        if snap.kerioInterface.isEmpty, snap.kerioDaemonRunning,
-           let first = utuns.first(where: { !ignore.contains($0) }) {
-            snap.kerioInterface = first
-            snap.tunnelEvidence.append("daemon up → first tun \(first)")
-        }
+        // Do NOT treat "daemon running" alone as a tunnel — kvpncsvc stays up while Disconnected.
 
-        if !pinGw.isEmpty {
+        // Gateway: prefer live route hit, then pin only when iface is actually up
+        if snap.kerioGateway.isEmpty, !pinGw.isEmpty, !snap.kerioInterface.isEmpty {
             snap.kerioGateway = pinGw
         } else if snap.kerioGateway.isEmpty, let gw = gatewayForPrefix("0/1", routes: routes) {
             snap.kerioGateway = gw
@@ -263,12 +259,10 @@ enum NetworkSense {
         items.append(DiagnosticItem(
             id: "session",
             title: "Kerio session (scutil)",
-            status: snapshot.kerioSessionConnected || snapshot.hasKerioTunnel ? .ok : .fail,
+            status: snapshot.kerioSessionConnected ? .ok : .fail,
             detail: snapshot.kerioSessionConnected
                 ? "Connected — \(snapshot.kerioSessionLabel.isEmpty ? "Kerio VPN" : snapshot.kerioSessionLabel)"
-                : (snapshot.hasKerioTunnel
-                   ? "scutil idle · tunnel/routes still present"
-                   : "Disconnected (or no Kerio NE session)")
+                : "Disconnected"
         ))
 
         items.append(DiagnosticItem(
@@ -303,7 +297,7 @@ enum NetworkSense {
                 : "Tunnel up — split not applied yet (\(vpnRoutes.count) configured)"
         } else {
             routeStatus = .info
-            routeDetail = "\(vpnRoutes.count) configured — waiting for tunnel"
+            routeDetail = "\(vpnRoutes.count) configured — waiting for Kerio Connect"
         }
         items.append(DiagnosticItem(id: "routes", title: "VPN routes", status: routeStatus, detail: routeDetail))
 

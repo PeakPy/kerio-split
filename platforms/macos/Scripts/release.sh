@@ -126,6 +126,7 @@ swiftc -parse-as-library \
   "$APP_SRC/ScenarioEngine.swift" \
   "$APP_SRC/OutboundModels.swift" \
   "$APP_SRC/OutboundManager.swift" \
+  "$APP_SRC/OutboundProbe.swift" \
   "$APP_SRC/NetworkEventLog.swift" \
   "$APP_SRC/ActivityDashboard.swift" \
   "$APP_SRC/VPNTopologyView.swift" \
@@ -140,6 +141,7 @@ swiftc -parse-as-library \
   -framework ServiceManagement \
   -framework UserNotifications \
   -framework ApplicationServices \
+  -framework Network \
   -O
 
 codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true

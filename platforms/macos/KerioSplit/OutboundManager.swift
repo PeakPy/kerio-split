@@ -13,6 +13,7 @@ final class OutboundManager: ObservableObject {
     @Published private(set) var activeProfileName: String = ""
 
     private var process: Process?
+    private var usesPrivileged = false
     private let supportRoot: URL
     private static let singBoxVersion = "1.11.15"
 
@@ -163,7 +164,35 @@ final class OutboundManager: ObservableObject {
             try FileManager.default.createDirectory(at: workDir, withIntermediateDirectories: true)
             let json = try SingBoxConfigBuilder.makeConfig(shareLink: profile.shareLink)
             try json.write(to: configURL, atomically: true, encoding: .utf8)
-            stopProcess()
+            await stopAll()
+
+            // TUN + auto_route needs root on macOS — prefer passwordless helper when available.
+            let helperReady = await Task.detached(priority: .userInitiated) {
+                HelperService.canRunPasswordless()
+            }.value
+
+            if helperReady {
+                let cfgPath = configURL.path
+                let result = await Task.detached(priority: .userInitiated) {
+                    HelperService.runCtl(["outbound-start", bin, cfgPath])
+                }.value
+                if result.ok {
+                    usesPrivileged = true
+                    process = nil
+                    isConnected = true
+                    connectedAt = Date()
+                    activeProfileName = profile.name
+                    statusDetail = "Connected — \(profile.name)"
+                    lastError = nil
+                    return true
+                }
+                lastError = Self.sanitizeEngineError(result.text.isEmpty ? "Privileged outbound start failed" : result.text)
+                isConnected = false
+                statusDetail = "Connection failed"
+                usesPrivileged = false
+                return false
+            }
+
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: bin)
             proc.arguments = ["run", "-c", configURL.path]
@@ -173,12 +202,19 @@ final class OutboundManager: ObservableObject {
             proc.standardOutput = Pipe()
             try proc.run()
             process = proc
-            // Give tun a moment; caller will re-scan network.
-            try? await Task.sleep(nanoseconds: 800_000_000)
+            usesPrivileged = false
+            try? await Task.sleep(nanoseconds: 900_000_000)
             if !proc.isRunning {
                 let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
                 let errText = String(data: errData, encoding: .utf8) ?? ""
-                lastError = errText.isEmpty ? "sing-box exited immediately" : String(errText.prefix(400))
+                var cleaned = Self.sanitizeEngineError(errText)
+                if cleaned.isEmpty { cleaned = "sing-box exited immediately" }
+                if cleaned.lowercased().contains("permission") || cleaned.lowercased().contains("operation not permitted") {
+                    cleaned += " — install the route helper so outbound can create a TUN as root."
+                } else if !HelperService.filesPresent {
+                    cleaned += " — if this keeps failing, Install route helper (TUN needs admin)."
+                }
+                lastError = cleaned
                 isConnected = false
                 statusDetail = "Connection failed"
                 process = nil
@@ -196,17 +232,68 @@ final class OutboundManager: ObservableObject {
             isConnected = false
             connectedAt = nil
             activeProfileName = ""
+            usesPrivileged = false
             return false
         }
     }
 
     func disconnect() {
         stopProcess()
+        let needPrivilegedStop = usesPrivileged || FileManager.default.fileExists(
+            atPath: workDir.appendingPathComponent("sing-box.pid").path
+        )
+        if needPrivilegedStop && HelperService.filesPresent {
+            // runCtl is blocking — keep it off the main actor via semaphore-free fire on a queue
+            let group = DispatchGroup()
+            group.enter()
+            DispatchQueue.global(qos: .userInitiated).async {
+                _ = HelperService.runCtl(["outbound-stop"])
+                group.leave()
+            }
+            _ = group.wait(timeout: .now() + 8)
+        }
         isConnected = false
         connectedAt = nil
         activeProfileName = ""
         statusDetail = "Disconnected"
         lastError = nil
+        usesPrivileged = false
+    }
+
+    private func stopAll() async {
+        stopProcess()
+        if HelperService.filesPresent {
+            await Task.detached(priority: .userInitiated) {
+                _ = HelperService.runCtl(["outbound-stop"])
+            }.value
+        }
+        usesPrivileged = false
+    }
+
+    static func sanitizeEngineError(_ raw: String) -> String {
+        var s = raw.replacingOccurrences(
+            of: "\u{001B}\\[[0-9;]*[A-Za-z]",
+            with: "",
+            options: .regularExpression
+        )
+        s = s.replacingOccurrences(of: "\r", with: "")
+        let lines = s
+            .split(whereSeparator: \.isNewline)
+            .map { String($0).trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        // Prefer the last concrete error line; drop pure noise.
+        let useful = lines.filter { line in
+            let lower = line.lowercased()
+            return lower.contains("error")
+                || lower.contains("failed")
+                || lower.contains("permission")
+                || lower.contains("denied")
+                || lower.contains("outbound=")
+                || lower.hasPrefix("FATAL")
+                || lower.contains("tun")
+        }
+        let pick = (useful.last ?? lines.last ?? s).trimmingCharacters(in: .whitespacesAndNewlines)
+        return String(pick.prefix(320))
     }
 
     func fetchSubscription(urlString: String, name: String) async throws -> [OutboundProfile] {
@@ -252,21 +339,44 @@ final class OutboundManager: ObservableObject {
 }
 
 enum SingBoxConfigBuilder {
-    /// Minimal sing-box config: TUN inbound + one outbound from share link via `outbound` urltest-less direct mapping.
-    /// Uses sing-box 1.8+ `outbounds` with `type` inferred from scheme when possible; falls back to `urltest` disabled.
+    /// TUN inbound + proxy outbound. Tuned for throughput (DNS hijack, sniff, mixed stack)
+    /// so Built-in mode is not dramatically slower than V2Box / Clash / Karing.
     static func makeConfig(shareLink: String) throws -> String {
-        // sing-box supports importing via experimental; we emit a wrapper that uses the `outbound` URI in a custom tag.
-        // Practical approach: write a config that uses `dialer` proxy from parsed fields where we can, else embed as shadowsocks/vless stub.
         let outbound = try outboundObject(from: shareLink)
         let root: [String: Any] = [
-            "log": ["level": "info"],
+            "log": ["level": "warn", "timestamp": true],
+            // Without DNS + sniff, every page looks "slow" even when the tunnel is fine.
+            "dns": [
+                "servers": [
+                    [
+                        "tag": "remote",
+                        "address": "8.8.8.8",
+                        "detour": "proxy"
+                    ],
+                    [
+                        "tag": "local",
+                        "address": "local",
+                        "detour": "direct"
+                    ]
+                ],
+                "rules": [
+                    // Resolve proxy/server names via system DNS (not through the tunnel).
+                    ["outbound": "any", "server": "local"]
+                ],
+                "final": "remote",
+                "strategy": "ipv4_only",
+                "independent_cache": true
+            ],
             "inbounds": [[
                 "type": "tun",
                 "tag": "tun-in",
-                "inet4_address": "172.19.0.1/30",
+                "address": ["172.19.0.1/30"],
+                // Other clients commonly use 9000 on utun for better bulk throughput.
+                "mtu": 9000,
                 "auto_route": true,
-                "strict_route": true,
-                "stack": "system"
+                // false: coexist with Kerio utun routes; strict_route steals too aggressively.
+                "strict_route": false,
+                "stack": "mixed"
             ]],
             "outbounds": [
                 outbound,
@@ -274,6 +384,15 @@ enum SingBoxConfigBuilder {
                 ["type": "block", "tag": "block"]
             ],
             "route": [
+                "rules": [
+                    [
+                        "action": "sniff",
+                        "timeout": "300ms"
+                    ],
+                    ["protocol": "dns", "action": "hijack-dns"],
+                    // LAN + Kerio private CIDRs follow the system table (Kerio utun wins).
+                    ["ip_is_private": true, "outbound": "direct"]
+                ],
                 "auto_detect_interface": true,
                 "final": "proxy"
             ]
@@ -287,28 +406,15 @@ enum SingBoxConfigBuilder {
 
     private static func outboundObject(from link: String) throws -> [String: Any] {
         let lower = link.lowercased()
-        if lower.hasPrefix("vmess://") {
-            return try vmessOutbound(link)
-        }
-        // For vless/trojan/ss — pass through as URL outbound if supported; otherwise store raw for user debugging.
-        if lower.hasPrefix("vless://") {
-            return try vlessOutbound(link)
-        }
-        if lower.hasPrefix("trojan://") {
-            return try trojanOutbound(link)
-        }
+        if lower.hasPrefix("vmess://") { return try vmessOutbound(link) }
+        if lower.hasPrefix("vless://") { return try vlessOutbound(link) }
+        if lower.hasPrefix("trojan://") { return try trojanOutbound(link) }
         if lower.hasPrefix("ss://") {
-            return [
-                "type": "shadowsocks",
-                "tag": "proxy",
-                "plugin": "",
-                "plugin_opts": "",
-                "server": "127.0.0.1",
-                "server_port": 1,
-                "method": "aes-128-gcm",
-                "password": "replace",
-                "_keriosplit_note": "ss:// raw import is limited; prefer vless/vmess. Link kept in outbound store."
-            ]
+            throw NSError(
+                domain: "KerioSplit",
+                code: 5,
+                userInfo: [NSLocalizedDescriptionKey: "Shadowsocks links are not supported yet — use VLESS / VMess / Trojan"]
+            )
         }
         throw NSError(domain: "KerioSplit", code: 5, userInfo: [NSLocalizedDescriptionKey: "Unsupported share link scheme"])
     }
@@ -332,36 +438,52 @@ enum SingBoxConfigBuilder {
             "server_port": port,
             "uuid": uuid,
             "security": "auto",
-            "alter_id": aid
+            "alter_id": aid,
+            "packet_encoding": "xudp"
         ]
         if tls {
-            out["tls"] = ["enabled": true, "server_name": sni]
+            var tlsObj: [String: Any] = ["enabled": true, "server_name": sni]
+            if let fp = obj["fp"] as? String, !fp.isEmpty {
+                tlsObj["utls"] = ["enabled": true, "fingerprint": fp]
+            }
+            out["tls"] = tlsObj
+        }
+        if let net = (obj["net"] as? String)?.lowercased(), net == "ws" {
+            var transport: [String: Any] = ["type": "ws"]
+            if let path = obj["path"] as? String, !path.isEmpty { transport["path"] = path }
+            if let hostHeader = obj["host"] as? String, !hostHeader.isEmpty {
+                transport["headers"] = ["Host": hostHeader]
+            }
+            out["transport"] = transport
         }
         return out
     }
 
     private static func vlessOutbound(_ link: String) throws -> [String: Any] {
-        // vless://uuid@host:port?params#name
-        guard let url = URL(string: link) else {
+        guard let parsed = ShareLinkEndpoint.parse(link), parsed.scheme == "vless" else {
             throw NSError(domain: "KerioSplit", code: 7, userInfo: [NSLocalizedDescriptionKey: "Invalid vless URL"])
         }
-        let uuid = url.user ?? ""
-        let host = url.host ?? ""
-        let port = url.port ?? 443
-        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
-        var query: [String: String] = [:]
-        for i in items { query[i.name] = i.value ?? "" }
-        let security = query["security"] ?? ""
-        let sni = query["sni"] ?? query["host"] ?? host
+        let query = parsed.query
+        let security = (query["security"] ?? "").lowercased()
+        let sni = query["sni"] ?? query["host"] ?? parsed.host
+        let packetEncoding = (query["packetEncoding"] ?? query["packet_encoding"] ?? "xudp")
         var out: [String: Any] = [
             "type": "vless",
             "tag": "proxy",
-            "server": host,
-            "server_port": port,
-            "uuid": uuid
+            "server": parsed.host,
+            "server_port": parsed.port,
+            "uuid": parsed.userInfo,
+            "packet_encoding": packetEncoding.isEmpty ? "xudp" : packetEncoding
         ]
         if security == "tls" || security == "reality" {
-            var tls: [String: Any] = ["enabled": true, "server_name": sni]
+            var tls: [String: Any] = [
+                "enabled": true,
+                "server_name": sni
+            ]
+            let fp = query["fp"] ?? "chrome"
+            if !fp.isEmpty {
+                tls["utls"] = ["enabled": true, "fingerprint": fp]
+            }
             if security == "reality" {
                 tls["reality"] = [
                     "enabled": true,
@@ -374,28 +496,60 @@ enum SingBoxConfigBuilder {
         if let flow = query["flow"], !flow.isEmpty {
             out["flow"] = flow
         }
+        if let transport = transportObject(from: query) {
+            out["transport"] = transport
+        }
         return out
     }
 
     private static func trojanOutbound(_ link: String) throws -> [String: Any] {
-        guard let url = URL(string: link) else {
+        guard let parsed = ShareLinkEndpoint.parse(link), parsed.scheme == "trojan" else {
             throw NSError(domain: "KerioSplit", code: 8, userInfo: [NSLocalizedDescriptionKey: "Invalid trojan URL"])
         }
-        let password = url.user ?? ""
-        let host = url.host ?? ""
-        let port = url.port ?? 443
-        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
-        var query: [String: String] = [:]
-        for i in items { query[i.name] = i.value ?? "" }
-        let sni = query["sni"] ?? host
-        return [
+        let query = parsed.query
+        let sni = query["sni"] ?? query["host"] ?? parsed.host
+        var out: [String: Any] = [
             "type": "trojan",
             "tag": "proxy",
-            "server": host,
-            "server_port": port,
-            "password": password,
-            "tls": ["enabled": true, "server_name": sni]
+            "server": parsed.host,
+            "server_port": parsed.port,
+            "password": parsed.userInfo,
+            "tls": [
+                "enabled": true,
+                "server_name": sni,
+                "utls": ["enabled": true, "fingerprint": query["fp"] ?? "chrome"]
+            ]
         ]
+        if let transport = transportObject(from: query) {
+            out["transport"] = transport
+        }
+        return out
+    }
+
+    private static func transportObject(from query: [String: String]) -> [String: Any]? {
+        let type = (query["type"] ?? query["net"] ?? "tcp").lowercased()
+        switch type {
+        case "ws", "websocket":
+            var t: [String: Any] = ["type": "ws"]
+            if let path = query["path"], !path.isEmpty { t["path"] = path.removingPercentEncoding ?? path }
+            if let host = query["host"], !host.isEmpty {
+                t["headers"] = ["Host": host]
+            }
+            return t
+        case "grpc":
+            var t: [String: Any] = ["type": "grpc"]
+            if let service = query["serviceName"] ?? query["servicename"], !service.isEmpty {
+                t["service_name"] = service
+            }
+            return t
+        case "http", "h2":
+            var t: [String: Any] = ["type": "http"]
+            if let path = query["path"], !path.isEmpty { t["path"] = path }
+            if let host = query["host"], !host.isEmpty { t["host"] = [host] }
+            return t
+        default:
+            return nil
+        }
     }
 
     private static func pad(_ s: String) -> String {

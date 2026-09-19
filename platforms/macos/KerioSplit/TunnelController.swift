@@ -55,6 +55,9 @@ final class TunnelController: ObservableObject {
     @Published var outboundEngineProgress = ""
     @Published var outboundConnectedAt: Date?
     @Published var outboundActiveName = ""
+    @Published var outboundLatencies: [String: Int] = [:]
+    @Published var outboundPinging = false
+    @Published var outboundAutoSelecting = false
     @Published var diagnosticReport = DiagnosticReport()
     @Published var kerioSessionConnected = false
     @Published var kerioSessionLabel = ""
@@ -970,6 +973,19 @@ final class TunnelController: ObservableObject {
             recordEvent("Kerio session Disconnected")
         }
 
+        // Drop stale pin when Kerio is fully down (iface gone) so we don't
+        // treat a leftover gateway as an active tunnel on the next probe.
+        if !snap.hasKerioTunnel,
+           !config.options.kerioInterface.isEmpty || !config.options.kerioGateway.isEmpty {
+            let oldIf = config.options.kerioInterface
+            config.options.kerioInterface = ""
+            config.options.kerioGateway = ""
+            saveConfig(quiet: true)
+            if !oldIf.isEmpty {
+                recordEvent("Cleared stale Kerio pin (\(oldIf)) — reconnect to re-learn")
+            }
+        }
+
         if snap.conflict, snap.conflictDetail != lastConflictDetail {
             lastConflictDetail = snap.conflictDetail
             recordEvent("Conflict: \(snap.conflictDetail)")
@@ -1732,6 +1748,8 @@ final class TunnelController: ObservableObject {
         setBusy(true, watchdogSeconds: 30)
         outboundStore.activeProfileId = profileId
         try? outboundManager.saveStore(outboundStore)
+        // Ensure helper scripts (outbound-start) are current before connect
+        syncScriptsToSupport()
         let ok = await outboundManager.connect(profile: profile)
         outboundConnected = outboundManager.isConnected
         outboundStatusDetail = outboundManager.statusDetail
@@ -1752,6 +1770,63 @@ final class TunnelController: ObservableObject {
         }
         setBusy(false)
         refreshScenario()
+    }
+
+    func pingOutboundProfiles() async {
+        guard !outboundStore.profiles.isEmpty else { return }
+        outboundPinging = true
+        outboundStatusDetail = "Pinging \(outboundStore.profiles.count) profile(s)…"
+        let profiles = outboundStore.profiles
+        let results = await OutboundProbe.pingAll(profiles: profiles)
+        outboundLatencies = results
+        outboundPinging = false
+        let okCount = results.count
+        let best = profiles
+            .compactMap { p -> (OutboundProfile, Int)? in
+                guard let ms = results[p.id] else { return nil }
+                return (p, ms)
+            }
+            .min(by: { $0.1 < $1.1 })
+        if let best {
+            outboundStatusDetail = "Ping done — best \(best.0.name) · \(best.1) ms (\(okCount)/\(profiles.count) up)"
+            pinStatus("Best: \(best.0.name) · \(best.1) ms", seconds: 5)
+        } else {
+            outboundStatusDetail = "Ping done — no reachable profiles"
+            pinStatus("Ping: no reachable nodes", seconds: 5)
+        }
+        recordEvent("Outbound ping — \(okCount)/\(profiles.count) reachable")
+    }
+
+    func autoSelectOutbound() async {
+        guard config.options.outboundMode == .builtIn else {
+            outboundError = "Switch mode to Built-in first"
+            refreshScenario()
+            return
+        }
+        guard !outboundStore.profiles.isEmpty else {
+            outboundError = "Import a profile first"
+            refreshScenario()
+            return
+        }
+        outboundAutoSelecting = true
+        await pingOutboundProfiles()
+        let best = outboundStore.profiles
+            .compactMap { p -> (OutboundProfile, Int)? in
+                guard let ms = outboundLatencies[p.id] else { return nil }
+                return (p, ms)
+            }
+            .min(by: { $0.1 < $1.1 })
+        guard let best else {
+            outboundAutoSelecting = false
+            outboundError = "Auto-select failed — no reachable profile"
+            pinStatus("Auto-select failed", seconds: 5)
+            refreshScenario()
+            return
+        }
+        pinStatus("Auto-select → \(best.0.name) · \(best.1) ms", seconds: 5)
+        recordEvent("Outbound auto-select — \(best.0.name) (\(best.1) ms)")
+        await connectOutbound(profileId: best.0.id)
+        outboundAutoSelecting = false
     }
 
     func disconnectOutbound() {

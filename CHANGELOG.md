@@ -5,6 +5,19 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-09-19
+
+### Added
+
+- Outbound profile Ping all + Auto-select best (TCP latency)
+- Privileged sing-box start via route helper (`outbound-start` / `outbound-stop`)
+
+### Fixed
+
+- Built-in outbound TUN config for sing-box 1.10+ (`address` instead of deprecated `inet4_address`)
+- Slow Built-in speeds vs other clients: DNS hijack, sniff, mixed stack, MTU 9000, private→direct
+- Cleaner Outbound UI (collapsed details, latency badges)
+
 ## [1.2.0] - 2026-09-19
 
 ### Added

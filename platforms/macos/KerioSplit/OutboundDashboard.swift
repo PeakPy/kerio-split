@@ -9,6 +9,7 @@ struct OutboundDashboard: View {
     @State private var ignoreDraft = ""
     @State private var showImport = false
     @State private var showSubscription = false
+    @State private var showAdvanced = false
     @State private var profileFilter = ""
     @State private var tick = Date()
 
@@ -17,11 +18,25 @@ struct OutboundDashboard: View {
         guard let id = controller.outboundStore.activeProfileId else { return nil }
         return controller.outboundStore.profiles.first { $0.id == id }
     }
+
     private var filteredProfiles: [OutboundProfile] {
         let q = profileFilter.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !q.isEmpty else { return controller.outboundStore.profiles }
-        return controller.outboundStore.profiles.filter {
-            $0.name.lowercased().contains(q) || $0.protocolLabel.lowercased().contains(q)
+        var list = controller.outboundStore.profiles
+        if !q.isEmpty {
+            list = list.filter {
+                $0.name.lowercased().contains(q) || $0.protocolLabel.lowercased().contains(q)
+            }
+        }
+        // Sort by latency when available (unreachable last)
+        return list.sorted { a, b in
+            let la = controller.outboundLatencies[a.id]
+            let lb = controller.outboundLatencies[b.id]
+            switch (la, lb) {
+            case let (x?, y?): return x < y
+            case (_?, nil): return true
+            case (nil, _?): return false
+            default: return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+            }
         }
     }
 
@@ -34,29 +49,36 @@ struct OutboundDashboard: View {
         return ""
     }
 
+    private var bestLatencyId: String? {
+        controller.outboundLatencies.min(by: { $0.value < $1.value })?.key
+    }
+
     var body: some View {
         PageScroll {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 18) {
                 connectionHero
-                if controller.outboundConnected || !outboundIface.isEmpty {
-                    liveSessionSection
-                    liveTrafficSection
-                }
                 modePicker
+
                 if mode == .builtIn {
-                    engineCard
-                    sessionDetailsCard
+                    if controller.outboundBinaryPath == nil || controller.outboundEngineBusy {
+                        engineCard
+                    }
+                    if controller.outboundConnected || !outboundIface.isEmpty {
+                        liveStrip
+                        liveTrafficSection
+                    }
                     profilesCard
                     addNodesSection
+                    advancedDetails
                 } else if mode == .external {
                     externalSection
-                    sessionDetailsCard
+                    advancedDetails
                 } else {
                     SurfaceCard {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Outbound is off")
-                                .font(.system(size: 14, weight: .semibold, design: .rounded))
-                            Text("Kerio Split only manages corporate CIDRs. Switch to Built-in or External when you want a second tunnel for general internet.")
+                                .font(.system(size: 15, weight: .semibold, design: .rounded))
+                            Text("Kerio Split only manages corporate CIDRs. Switch to Built-in when you want a second tunnel for general internet.")
                                 .font(.system(size: 12))
                                 .foregroundStyle(Brand.muted)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -94,11 +116,11 @@ struct OutboundDashboard: View {
         throughput.start(tracking: Array(targets.prefix(3)))
     }
 
-    // MARK: - Connection hero
+    // MARK: - Hero
 
     private var connectionHero: some View {
         let connected = controller.outboundConnected
-        let connecting = controller.outboundConnecting
+        let connecting = controller.outboundConnecting || controller.outboundAutoSelecting
         let accent: Color = {
             if connecting { return Brand.warn }
             if connected { return Brand.success }
@@ -110,16 +132,24 @@ struct OutboundDashboard: View {
                 HStack(alignment: .center, spacing: 16) {
                     ZStack {
                         Circle()
-                            .fill(accent.opacity(0.15))
-                            .frame(width: 56, height: 56)
-                        Image(systemName: connecting ? "arrow.triangle.2.circlepath" : (connected ? "checkmark.shield.fill" : "shield.slash"))
+                            .fill(
+                                LinearGradient(
+                                    colors: [accent.opacity(0.22), accent.opacity(0.08)],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+                            .frame(width: 58, height: 58)
+                        Image(systemName: connecting
+                              ? "arrow.triangle.2.circlepath"
+                              : (connected ? "checkmark.shield.fill" : "shield.lefthalf.filled"))
                             .font(.system(size: 22, weight: .semibold))
                             .foregroundStyle(accent)
                     }
 
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: 5) {
                         Text(heroTitle)
-                            .font(.system(size: 18, weight: .bold, design: .rounded))
+                            .font(.system(size: 20, weight: .bold, design: .rounded))
                             .foregroundStyle(Brand.ink)
                         Text(heroSubtitle)
                             .font(.system(size: 12))
@@ -129,14 +159,14 @@ struct OutboundDashboard: View {
                             Text(err)
                                 .font(.system(size: 11))
                                 .foregroundStyle(Brand.danger)
-                                .lineLimit(3)
+                                .lineLimit(2)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
 
                     Spacer(minLength: 8)
 
-                    if connected || connecting {
+                    if connected || controller.outboundConnecting {
                         Button {
                             controller.disconnectOutbound()
                         } label: {
@@ -145,90 +175,99 @@ struct OutboundDashboard: View {
                         }
                         .buttonStyle(.borderedProminent)
                         .tint(Brand.danger)
-                        .disabled(connecting)
+                        .disabled(controller.outboundConnecting)
+                    } else if mode == .builtIn, !controller.outboundStore.profiles.isEmpty {
+                        Button {
+                            Task { await controller.autoSelectOutbound() }
+                        } label: {
+                            Label(
+                                controller.outboundAutoSelecting ? "Selecting…" : "Auto-select",
+                                systemImage: "bolt.horizontal.circle.fill"
+                            )
+                            .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Brand.deep)
+                        .disabled(controller.outboundBinaryPath == nil || controller.isBusy || controller.outboundPinging)
                     }
                 }
-                .padding(18)
+                .padding(20)
 
                 if connected {
-                    Divider().opacity(0.45)
-                    HStack(spacing: 12) {
+                    Divider().opacity(0.4)
+                    HStack(spacing: 10) {
                         if let p = activeProfile {
                             protocolBadge(p.protocolLabel)
                             Text(p.name)
                                 .font(.system(size: 13, weight: .semibold, design: .rounded))
                                 .lineLimit(1)
+                            if let ms = controller.outboundLatencies[p.id] {
+                                latencyPill(ms, emphasize: true)
+                            }
                         } else if !controller.outboundActiveName.isEmpty {
                             Text(controller.outboundActiveName)
                                 .font(.system(size: 13, weight: .semibold, design: .rounded))
-                                .lineLimit(1)
                         }
                         Spacer()
+                        Text(durationText)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(Brand.muted)
+                            .monospacedDigit()
                         if !outboundIface.isEmpty {
                             Text(outboundIface)
                                 .font(.system(size: 11, design: .monospaced))
                                 .foregroundStyle(Brand.muted)
                         }
-                        Text("Internet via outbound")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(Brand.success)
                     }
-                    .padding(.horizontal, 18)
+                    .padding(.horizontal, 20)
                     .padding(.vertical, 12)
                 }
             }
         }
     }
 
-    // MARK: - Live session + traffic
+    // MARK: - Live strip (compact)
 
-    private var liveSessionSection: some View {
+    private var liveStrip: some View {
         let series = throughput.series.first { $0.id == "outbound" }
         return SurfaceCard {
-            VStack(alignment: .leading, spacing: 12) {
-                SectionLabel(
-                    title: "Live session",
-                    subtitle: controller.outboundConnected
-                        ? "Realtime outbound path · updates every second"
-                        : "Secondary tunnel detected"
+            HStack(spacing: 0) {
+                liveMetric("Speed", series?.totalText ?? "—")
+                Divider().frame(height: 28)
+                liveMetric("Down", series?.downText ?? "—")
+                Divider().frame(height: 28)
+                liveMetric("Up", series?.upText ?? "—")
+                Divider().frame(height: 28)
+                liveMetric(
+                    "Kerio",
+                    controller.networkSnapshot.kerioInterface.isEmpty
+                        ? "Off"
+                        : controller.networkSnapshot.kerioInterface
                 )
-
-                LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: 130), spacing: 10)],
-                    spacing: 10
-                ) {
-                    detailTile("Status", controller.outboundConnecting ? "Connecting" : (controller.outboundConnected ? "Connected" : "Detected"))
-                    detailTile("Profile", controller.outboundActiveName.isEmpty ? (activeProfile?.name ?? "—") : controller.outboundActiveName)
-                    detailTile("Protocol", activeProfile?.protocolLabel ?? "—")
-                    detailTile("Interface", outboundIface.isEmpty ? "—" : outboundIface)
-                    detailTile("Speed", series?.totalText ?? "—")
-                    detailTile("Download", series?.downText ?? "—")
-                    detailTile("Upload", series?.upText ?? "—")
-                    detailTile("Duration", durationText)
-                    detailTile("Default route", controller.networkSnapshot.defaultInterface.isEmpty ? "—" : controller.networkSnapshot.defaultInterface)
-                    detailTile("Kerio tunnel", controller.networkSnapshot.kerioInterface.isEmpty ? "—" : controller.networkSnapshot.kerioInterface)
-                    detailTile("Split", controller.isActive ? "ON" : "OFF")
-                    detailTile("Mode", mode.title)
-                }
+                Divider().frame(height: 28)
+                liveMetric("Split", controller.isActive ? "ON" : "OFF")
             }
         }
     }
 
+    private func liveMetric(_ title: String, _ value: String) -> some View {
+        VStack(spacing: 3) {
+            Text(title.uppercased())
+                .font(.system(size: 9, weight: .bold, design: .rounded))
+                .foregroundStyle(Brand.muted)
+            Text(value)
+                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .foregroundStyle(Brand.ink)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+                .monospacedDigit()
+        }
+        .frame(maxWidth: .infinity)
+    }
+
     private var liveTrafficSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SectionLabel(
-                title: "Live traffic",
-                subtitle: throughput.series.isEmpty
-                    ? "Waiting for interface counters…"
-                    : "Outbound · LAN · Kerio when present"
-            )
-            if throughput.series.isEmpty {
-                SurfaceCard {
-                    Text("Speed graphs appear once a tunnel interface is up.")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Brand.muted)
-                }
-            } else {
+        Group {
+            if !throughput.series.isEmpty {
                 LazyVGrid(
                     columns: [GridItem(.adaptive(minimum: 260, maximum: 560), spacing: 12)],
                     spacing: 12
@@ -239,132 +278,6 @@ struct OutboundDashboard: View {
                 }
             }
         }
-    }
-
-    private var sessionDetailsCard: some View {
-        SurfaceCard {
-            VStack(alignment: .leading, spacing: 12) {
-                SectionLabel(
-                    title: "Connection details",
-                    subtitle: "Routing context around outbound + Kerio coexistence"
-                )
-
-                detailRow("Outbound status", controller.outboundStatusDetail)
-                detailRow("Active profile", controller.outboundActiveName.isEmpty ? (activeProfile?.name ?? "None") : controller.outboundActiveName)
-                if let p = activeProfile {
-                    detailRow("Protocol", p.protocolLabel)
-                    detailRow("Share link", String(p.shareLink.prefix(64)) + (p.shareLink.count > 64 ? "…" : ""))
-                }
-                detailRow("Outbound iface", outboundIface.isEmpty ? "Not detected" : outboundIface)
-                detailRow(
-                    "Secondary tunnels",
-                    controller.networkSnapshot.secondaryTuns.isEmpty
-                        ? "None"
-                        : controller.networkSnapshot.secondaryTuns.joined(separator: ", ")
-                )
-                detailRow(
-                    "Default route",
-                    "\(controller.networkSnapshot.defaultInterface.isEmpty ? "?" : controller.networkSnapshot.defaultInterface) via \(controller.networkSnapshot.defaultGateway.isEmpty ? "link" : controller.networkSnapshot.defaultGateway)"
-                )
-                detailRow(
-                    "Kerio",
-                    controller.networkSnapshot.kerioInterface.isEmpty
-                        ? "No Kerio tunnel"
-                        : "\(controller.networkSnapshot.kerioInterface) · gw \(controller.networkSnapshot.kerioGateway)"
-                )
-                detailRow("Ignore list", controller.config.options.ignoreInterfaces.isEmpty ? "Empty" : controller.config.options.ignoreInterfaces.joined(separator: ", "))
-                detailRow("Profiles saved", "\(controller.outboundStore.profiles.count)")
-                detailRow("Subscriptions", "\(controller.outboundStore.subscriptions.count)")
-                if let path = controller.outboundBinaryPath {
-                    detailRow("Engine", path)
-                }
-
-                HStack(spacing: 8) {
-                    Button("Refresh network") {
-                        controller.probeNetwork()
-                        syncThroughput()
-                    }
-                    .buttonStyle(.bordered)
-                    if controller.outboundConnected {
-                        Button("Disconnect outbound") { controller.disconnectOutbound() }
-                            .buttonStyle(.bordered)
-                            .tint(Brand.danger)
-                    }
-                }
-            }
-        }
-        // Keep duration label refreshing via tick
-        .id(tick.timeIntervalSince1970.rounded())
-    }
-
-    private var durationText: String {
-        guard let at = controller.outboundConnectedAt else { return "—" }
-        let secs = max(0, Int(tick.timeIntervalSince(at)))
-        let h = secs / 3600
-        let m = (secs % 3600) / 60
-        let s = secs % 60
-        if h > 0 { return String(format: "%d:%02d:%02d", h, m, s) }
-        return String(format: "%02d:%02d", m, s)
-    }
-
-    private func detailTile(_ title: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(title.uppercased())
-                .font(.system(size: 9, weight: .bold, design: .rounded))
-                .foregroundStyle(Brand.muted)
-            Text(value)
-                .font(.system(size: 13, weight: .semibold, design: .rounded))
-                .foregroundStyle(Brand.ink)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-                .monospacedDigit()
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Brand.field)
-        )
-    }
-
-    private func detailRow(_ title: String, _ value: String) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Text(title)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(Brand.muted)
-                .frame(width: 130, alignment: .leading)
-            Text(value)
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(Brand.ink)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
-    private var heroTitle: String {
-        if controller.outboundConnecting { return "Connecting…" }
-        if controller.outboundConnected { return "Connected" }
-        if mode == .off { return "Outbound off" }
-        if mode == .external { return "External mode" }
-        return "Not connected"
-    }
-
-    private var heroSubtitle: String {
-        if controller.outboundConnecting {
-            return controller.outboundStatusDetail
-        }
-        if controller.outboundConnected {
-            return controller.outboundStatusDetail.isEmpty
-                ? "General internet uses outbound. Kerio CIDRs stay on Kerio."
-                : controller.outboundStatusDetail
-        }
-        if mode == .builtIn {
-            return "Pick a profile below and tap Connect. Kerio corporate routes stay guarded."
-        }
-        if mode == .external {
-            return "Connect in your other VPN app. Kerio Split will detect its tunnel."
-        }
-        return "Enable Built-in or External to add a second tunnel for general internet."
     }
 
     // MARK: - Mode
@@ -405,15 +318,17 @@ struct OutboundDashboard: View {
     private var engineCard: some View {
         SurfaceCard {
             HStack(alignment: .center, spacing: 14) {
-                Image(systemName: controller.outboundBinaryPath == nil ? "shippingbox" : "shippingbox.fill")
+                Image(systemName: "shippingbox")
                     .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(controller.outboundBinaryPath == nil ? Brand.warn : Brand.success)
+                    .foregroundStyle(Brand.warn)
                     .frame(width: 36)
 
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(controller.outboundBinaryPath == nil ? "Engine needed" : "Engine ready")
+                    Text("Engine needed")
                         .font(.system(size: 14, weight: .semibold, design: .rounded))
-                    Text(engineDetail)
+                    Text(controller.outboundEngineBusy
+                         ? (controller.outboundEngineProgress.isEmpty ? "Downloading…" : controller.outboundEngineProgress)
+                         : "One tap installs sing-box. Route helper is required for TUN.")
                         .font(.system(size: 11))
                         .foregroundStyle(Brand.muted)
                         .fixedSize(horizontal: false, vertical: true)
@@ -422,13 +337,8 @@ struct OutboundDashboard: View {
                 Spacer(minLength: 8)
 
                 if controller.outboundEngineBusy {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text(controller.outboundEngineProgress.isEmpty ? "Working…" : controller.outboundEngineProgress)
-                        .font(.system(size: 11))
-                        .foregroundStyle(Brand.muted)
-                        .lineLimit(1)
-                } else if controller.outboundBinaryPath == nil {
+                    ProgressView().controlSize(.small)
+                } else {
                     Button {
                         Task { await controller.installOutboundEngine() }
                     } label: {
@@ -436,46 +346,69 @@ struct OutboundDashboard: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(Brand.deep)
-                } else {
-                    Button("Reinstall") {
-                        Task { await controller.installOutboundEngine() }
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
                 }
             }
         }
-    }
-
-    private var engineDetail: String {
-        if controller.outboundEngineBusy {
-            return controller.outboundEngineProgress.isEmpty
-                ? "Downloading outbound engine…"
-                : controller.outboundEngineProgress
-        }
-        if let path = controller.outboundBinaryPath {
-            return URL(fileURLWithPath: path).lastPathComponent + " · ready to connect"
-        }
-        return "One tap downloads sing-box into Application Support. No Terminal."
     }
 
     // MARK: - Profiles
 
     private var profilesCard: some View {
         SurfaceCard {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .firstTextBaseline) {
                     SectionLabel(
                         title: "Profiles",
                         subtitle: controller.outboundStore.profiles.isEmpty
-                            ? "Import a share link or subscription to get started"
-                            : "\(controller.outboundStore.profiles.count) saved · tap Connect on a row"
+                            ? "Import a share link or subscription"
+                            : "\(controller.outboundStore.profiles.count) saved"
                     )
                     Spacer()
                     if !controller.outboundStore.profiles.isEmpty {
                         TextField("Filter", text: $profileFilter)
                             .textFieldStyle(.roundedBorder)
-                            .frame(maxWidth: 160)
+                            .frame(maxWidth: 140)
+                    }
+                }
+
+                if !controller.outboundStore.profiles.isEmpty {
+                    HStack(spacing: 8) {
+                        Button {
+                            Task { await controller.pingOutboundProfiles() }
+                        } label: {
+                            Label(
+                                controller.outboundPinging ? "Pinging…" : "Ping all",
+                                systemImage: "waveform.path.ecg"
+                            )
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(controller.outboundPinging || controller.outboundConnecting || controller.isBusy)
+
+                        Button {
+                            Task { await controller.autoSelectOutbound() }
+                        } label: {
+                            Label(
+                                controller.outboundAutoSelecting ? "Selecting…" : "Auto-select best",
+                                systemImage: "bolt.horizontal.circle"
+                            )
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Brand.deep)
+                        .disabled(
+                            controller.outboundBinaryPath == nil
+                                || controller.outboundPinging
+                                || controller.outboundConnecting
+                                || controller.outboundAutoSelecting
+                                || controller.isBusy
+                        )
+
+                        Spacer()
+
+                        if !controller.outboundLatencies.isEmpty {
+                            Text("\(controller.outboundLatencies.count) reachable")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(Brand.muted)
+                        }
                     }
                 }
 
@@ -514,31 +447,52 @@ struct OutboundDashboard: View {
         let isActive = controller.outboundConnected && controller.outboundStore.activeProfileId == profile.id
         let isSelected = controller.outboundStore.activeProfileId == profile.id
         let canConnect = controller.outboundBinaryPath != nil && !controller.outboundConnecting
+        let latency = controller.outboundLatencies[profile.id]
+        let isBest = bestLatencyId == profile.id && latency != nil
 
         return HStack(spacing: 12) {
             protocolBadge(profile.protocolLabel)
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text(profile.name)
                         .font(.system(size: 13, weight: .semibold, design: .rounded))
                         .lineLimit(1)
                     if isActive {
-                        Text("CONNECTED")
+                        Text("LIVE")
                             .font(.system(size: 9, weight: .bold, design: .rounded))
                             .foregroundStyle(Brand.success)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
                             .background(Capsule().fill(Brand.success.opacity(0.15)))
+                    } else if isBest {
+                        Text("BEST")
+                            .font(.system(size: 9, weight: .bold, design: .rounded))
+                            .foregroundStyle(Brand.deep)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(Brand.deep.opacity(0.12)))
                     }
                 }
-                Text(shortLink(profile.shareLink))
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(Brand.muted)
-                    .lineLimit(1)
+                if let ep = profile.endpointHostPort {
+                    Text("\(ep.host):\(ep.port)")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(Brand.muted)
+                        .lineLimit(1)
+                }
             }
 
             Spacer(minLength: 4)
+
+            if controller.outboundPinging && latency == nil {
+                ProgressView().controlSize(.mini)
+            } else if let ms = latency {
+                latencyPill(ms, emphasize: isBest)
+            } else if !controller.outboundLatencies.isEmpty {
+                Text("timeout")
+                    .font(.system(size: 10, weight: .medium, design: .rounded))
+                    .foregroundStyle(Brand.danger.opacity(0.85))
+            }
 
             if isActive {
                 Button("Disconnect") { controller.disconnectOutbound() }
@@ -554,7 +508,7 @@ struct OutboundDashboard: View {
                 .buttonStyle(.borderedProminent)
                 .tint(Brand.deep)
                 .controlSize(.small)
-                .disabled(!canConnect || controller.isBusy)
+                .disabled(!canConnect || controller.isBusy || controller.outboundAutoSelecting)
             }
 
             Button {
@@ -572,9 +526,81 @@ struct OutboundDashboard: View {
                 .fill(isActive ? Brand.success.opacity(0.08) : Brand.field)
                 .overlay(
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(isActive ? Brand.success.opacity(0.35) : Brand.line, lineWidth: 1)
+                        .strokeBorder(
+                            isActive ? Brand.success.opacity(0.35) : (isBest ? Brand.deep.opacity(0.35) : Brand.line),
+                            lineWidth: 1
+                        )
                 )
         )
+    }
+
+    // MARK: - Advanced (collapsed)
+
+    private var advancedDetails: some View {
+        DisclosureGroup(isExpanded: $showAdvanced) {
+            VStack(alignment: .leading, spacing: 10) {
+                detailRow("Outbound status", controller.outboundStatusDetail)
+                detailRow("Active profile", controller.outboundActiveName.isEmpty ? (activeProfile?.name ?? "None") : controller.outboundActiveName)
+                detailRow("Outbound iface", outboundIface.isEmpty ? "Not detected" : outboundIface)
+                detailRow(
+                    "Default route",
+                    "\(controller.networkSnapshot.defaultInterface.isEmpty ? "?" : controller.networkSnapshot.defaultInterface) via \(controller.networkSnapshot.defaultGateway.isEmpty ? "link" : controller.networkSnapshot.defaultGateway)"
+                )
+                detailRow(
+                    "Kerio",
+                    controller.networkSnapshot.kerioInterface.isEmpty
+                        ? (controller.networkSnapshot.kerioSessionConnected ? "Session up · no utun yet" : "No Kerio tunnel")
+                        : "\(controller.networkSnapshot.kerioInterface) · gw \(controller.networkSnapshot.kerioGateway)"
+                )
+                detailRow("Ignore list", controller.config.options.ignoreInterfaces.isEmpty ? "Empty" : controller.config.options.ignoreInterfaces.joined(separator: ", "))
+                if let path = controller.outboundBinaryPath {
+                    detailRow("Engine", path)
+                }
+                HStack(spacing: 8) {
+                    Button("Refresh network") {
+                        controller.probeNetwork()
+                        syncThroughput()
+                    }
+                    .buttonStyle(.bordered)
+                    if controller.outboundBinaryPath != nil {
+                        Button("Reinstall engine") {
+                            Task { await controller.installOutboundEngine() }
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                }
+            }
+            .padding(.top, 10)
+        } label: {
+            Text("Connection details")
+                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .foregroundStyle(Brand.ink)
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Brand.panel)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(Brand.line, lineWidth: 1)
+                )
+        )
+        .id(tick.timeIntervalSince1970.rounded())
+    }
+
+    private func detailRow(_ title: String, _ value: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text(title)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Brand.muted)
+                .frame(width: 130, alignment: .leading)
+            Text(value)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(Brand.ink)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     // MARK: - Add nodes
@@ -602,7 +628,7 @@ struct OutboundDashboard: View {
                     VStack(alignment: .leading, spacing: 10) {
                         SectionLabel(
                             title: "Import share link",
-                            subtitle: "vless:// · vmess:// · trojan:// — one link or a pasted subscription body"
+                            subtitle: "vless:// · vmess:// · trojan://"
                         )
                         TextEditor(text: $importDraft)
                             .font(.system(size: 12, design: .monospaced))
@@ -704,6 +730,43 @@ struct OutboundDashboard: View {
 
     // MARK: - Helpers
 
+    private var heroTitle: String {
+        if controller.outboundAutoSelecting { return "Auto-selecting…" }
+        if controller.outboundConnecting { return "Connecting…" }
+        if controller.outboundConnected { return "Connected" }
+        if mode == .off { return "Outbound off" }
+        if mode == .external { return "External mode" }
+        return "Ready to connect"
+    }
+
+    private var heroSubtitle: String {
+        if controller.outboundAutoSelecting || controller.outboundConnecting {
+            return controller.outboundStatusDetail
+        }
+        if controller.outboundConnected {
+            return controller.outboundStatusDetail.isEmpty
+                ? "General internet uses outbound. Kerio CIDRs stay on Kerio."
+                : controller.outboundStatusDetail
+        }
+        if mode == .builtIn {
+            return "Ping profiles, auto-select the fastest, or connect manually. Kerio routes stay guarded."
+        }
+        if mode == .external {
+            return "Connect in your other VPN app. Kerio Split will detect its tunnel."
+        }
+        return "Enable Built-in or External to add a second tunnel for general internet."
+    }
+
+    private var durationText: String {
+        guard let at = controller.outboundConnectedAt else { return "—" }
+        let secs = max(0, Int(tick.timeIntervalSince(at)))
+        let h = secs / 3600
+        let m = (secs % 3600) / 60
+        let s = secs % 60
+        if h > 0 { return String(format: "%d:%02d:%02d", h, m, s) }
+        return String(format: "%02d:%02d", m, s)
+    }
+
     private func protocolBadge(_ label: String) -> some View {
         Text(label)
             .font(.system(size: 10, weight: .bold, design: .rounded))
@@ -716,8 +779,20 @@ struct OutboundDashboard: View {
             )
     }
 
-    private func shortLink(_ link: String) -> String {
-        if link.count <= 52 { return link }
-        return String(link.prefix(50)) + "…"
+    private func latencyPill(_ ms: Int, emphasize: Bool) -> some View {
+        let color: Color = {
+            if ms < 120 { return Brand.success }
+            if ms < 250 { return Brand.warn }
+            return Brand.danger
+        }()
+        return Text("\(ms) ms")
+            .font(.system(size: 11, weight: .bold, design: .rounded))
+            .foregroundStyle(emphasize ? .white : color)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                Capsule().fill(emphasize ? color : color.opacity(0.14))
+            )
+            .monospacedDigit()
     }
 }

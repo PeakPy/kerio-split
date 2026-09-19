@@ -508,6 +508,66 @@ cmd_guard() {
   echo "guard=repaired iface=$vpn_if gw=$vpn_gw"
 }
 
+# --- Built-in outbound (sing-box TUN) — requires root for auto_route ---
+cmd_outbound_start() {
+  need_root
+  local bin="${1:-}"
+  local cfg="${2:-}"
+  [[ -n "$bin" && -x "$bin" ]] || die "outbound-start: binary missing or not executable: ${bin:-?}"
+  [[ -n "$cfg" && -f "$cfg" ]] || die "outbound-start: config missing: ${cfg:-?}"
+
+  local outdir="$SUPPORT/Outbound"
+  mkdir -p "$outdir"
+
+  cmd_outbound_stop >/dev/null 2>&1 || true
+
+  nohup "$bin" run -c "$cfg" >"$outdir/sing-box.log" 2>&1 &
+  local pid=$!
+  echo "$pid" >"$outdir/sing-box.pid"
+  # Drop ownership so the app can read logs / pid later
+  if [[ -n "${SUDO_USER:-}" ]]; then
+    chown "${SUDO_USER}:staff" "$outdir/sing-box.pid" "$outdir/sing-box.log" 2>/dev/null || true
+  fi
+
+  sleep 0.9
+  if kill -0 "$pid" 2>/dev/null; then
+    log "outbound: running pid=$pid"
+    echo "outbound=running pid=$pid"
+    return 0
+  fi
+
+  echo "outbound=failed" >&2
+  if [[ -f "$outdir/sing-box.log" ]]; then
+    # Strip ANSI so the app can show a clean error
+    /usr/bin/sed -E 's/\x1B\[[0-9;]*[A-Za-z]//g' "$outdir/sing-box.log" | tail -n 30 >&2 || true
+  fi
+  rm -f "$outdir/sing-box.pid"
+  exit 1
+}
+
+cmd_outbound_stop() {
+  need_root
+  local outdir="$SUPPORT/Outbound"
+  local pidfile="$outdir/sing-box.pid"
+  local cfg="$outdir/sing-box.json"
+
+  if [[ -f "$pidfile" ]]; then
+    local pid
+    pid="$(tr -d '[:space:]' <"$pidfile" 2>/dev/null || true)"
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      kill "$pid" 2>/dev/null || true
+      sleep 0.35
+      kill -9 "$pid" 2>/dev/null || true
+    fi
+    rm -f "$pidfile"
+  fi
+  # Belt-and-suspenders: match our config path only
+  if [[ -f "$cfg" ]]; then
+    pkill -f "sing-box run -c ${cfg}" 2>/dev/null || true
+  fi
+  echo "outbound=stopped"
+}
+
 main() {
   case "${1:-}" in
     capture) cmd_capture ;;
@@ -515,7 +575,9 @@ main() {
     restore) cmd_restore ;;
     status) cmd_status ;;
     guard) cmd_guard ;;
-    *) echo "Usage: sudo $0 capture|apply|restore|status|guard"; exit 1 ;;
+    outbound-start) shift; cmd_outbound_start "$@" ;;
+    outbound-stop) cmd_outbound_stop ;;
+    *) echo "Usage: sudo $0 capture|apply|restore|status|guard|outbound-start|outbound-stop"; exit 1 ;;
   esac
 }
 
