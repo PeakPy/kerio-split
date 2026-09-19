@@ -136,6 +136,7 @@ final class TunnelController: ObservableObject {
 
     private let fileManager = FileManager.default
     private var pollTimer: Timer?
+    private var monitorTick = 0
     private var busyWatchdog: Timer?
     private var didBootstrap = false
     private var notificationsAuthorized = false
@@ -256,13 +257,26 @@ final class TunnelController: ObservableObject {
 
     func startMonitoring() {
         guard pollTimer == nil else { return }
-        let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
+        // 2s cadence; heavy work is staggered so the UI stays responsive.
+        let timer = Timer(timeInterval: 2.0, repeats: true) { [weak self] _ in
             DispatchQueue.main.async {
-                self?.detectApplied()
-                self?.probeNetwork()
-                self?.refreshHelperStatus()
-                self?.runRouteGuardIfNeeded()
-                self?.refreshConnectivity()
+                guard let self else { return }
+                self.monitorTick &+= 1
+                let tick = self.monitorTick
+                self.detectApplied()
+                self.probeNetwork()
+                // Connectivity ~every 4s
+                if tick % 2 == 0 {
+                    self.refreshConnectivity()
+                }
+                // Route guard ~every 10s
+                if tick % 5 == 0 {
+                    self.runRouteGuardIfNeeded()
+                }
+                // Helper sudo check is expensive — ~every 30s
+                if tick == 1 || tick % 15 == 0 {
+                    self.refreshHelperStatus()
+                }
             }
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -1750,7 +1764,25 @@ final class TunnelController: ObservableObject {
         try? outboundManager.saveStore(outboundStore)
         // Ensure helper scripts (outbound-start) are current before connect
         syncScriptsToSupport()
-        let ok = await outboundManager.connect(profile: profile)
+        // Refresh once so we bind outbound dials to the real LAN, not Kerio.
+        probeNetwork()
+        // Give the probe a beat, then read snapshot (probe is async).
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        let snap = networkSnapshot
+        let bindIface = snap.lanInterface.isEmpty ? snap.defaultInterface : snap.lanInterface
+        var exclude: [String] = []
+        if !snap.kerioInterface.isEmpty { exclude.append(snap.kerioInterface) }
+
+        // Kerio full-tunnel hijack makes internet crawl — apply split first when possible.
+        if helperReady, !isActive, snap.hasKerioTunnel || snap.fullTunnelHijack {
+            await ensureSplitAppliedForOutbound()
+        }
+
+        let ok = await outboundManager.connect(
+            profile: profile,
+            bindInterface: bindIface,
+            excludeInterfaces: exclude
+        )
         outboundConnected = outboundManager.isConnected
         outboundStatusDetail = outboundManager.statusDetail
         outboundError = outboundManager.lastError
@@ -1761,7 +1793,7 @@ final class TunnelController: ObservableObject {
             recordEvent("Outbound connected — \(profile.name)")
             pinStatus("Connected — \(profile.name)", seconds: 6)
             probeNetwork()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                 self?.autoIgnoreSecondaryTuns()
             }
         } else {
@@ -1827,6 +1859,30 @@ final class TunnelController: ObservableObject {
         recordEvent("Outbound auto-select — \(best.0.name) (\(best.1) ms)")
         await connectOutbound(profileId: best.0.id)
         outboundAutoSelecting = false
+    }
+
+    /// Apply split quickly before Built-in outbound so Kerio 0/1 hijack does not swallow internet.
+    private func ensureSplitAppliedForOutbound() async {
+        pinStatus("Applying split before outbound…", seconds: 4)
+        saveConfig(quiet: true)
+        syncScriptsToSupport()
+        let result = await Task.detached(priority: .userInitiated) {
+            HelperService.runCtl(["apply"])
+        }.value
+        if result.ok
+            || result.text.contains("split tunnel applied")
+            || result.text.contains("hijack") {
+            isActive = true
+            sessionPhase = .connected
+            updateStep("split", .done, "Split ON — only VPN routes use Kerio.")
+            recordEvent("Split auto-applied before outbound")
+            learnPinFromSnapshot()
+            probeNetwork()
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        } else {
+            pinStatus("Split apply failed — outbound may be slow until you Apply", seconds: 6)
+            recordEvent("Split auto-apply before outbound failed")
+        }
     }
 
     func disconnectOutbound() {

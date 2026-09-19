@@ -19,7 +19,7 @@ enum HelperService {
         return runProcess(
             "/usr/bin/sudo",
             ["-n", ctlPath, "ping"],
-            timeoutSeconds: 4
+            timeoutSeconds: 2
         ).ok
     }
 
@@ -32,7 +32,7 @@ enum HelperService {
         lines.append("sudoers: \(sudoersPath) \(FileManager.default.fileExists(atPath: sudoersPath) ? "present" : "MISSING")")
 
         if FileManager.default.isExecutableFile(atPath: ctlPath) {
-            let ping = runProcess("/usr/bin/sudo", ["-n", ctlPath, "ping"], timeoutSeconds: 4)
+            let ping = runProcess("/usr/bin/sudo", ["-n", ctlPath, "ping"], timeoutSeconds: 2)
             if ping.ok {
                 lines.append("sudo -n ping: OK")
             } else {

@@ -122,14 +122,46 @@ enum NetworkSense {
         splitActive: Bool
     ) -> NetworkSnapshot {
         let ignore = Set(ignoreInterfaces.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
-        let routes = HelperService.runProcess("/usr/sbin/netstat", ["-rn", "-f", "inet"], timeoutSeconds: 4).text
-        let ifconfig = HelperService.runProcess("/sbin/ifconfig", ["-a"], timeoutSeconds: 4).text
-        let ncList = HelperService.runProcess("/usr/sbin/scutil", ["--nc", "list"], timeoutSeconds: 4).text
+
+        // Parallel probes — sequential netstat/ifconfig/scutil made every refresh feel laggy.
+        final class ProbeBox: @unchecked Sendable {
+            var routes = ""
+            var ifconfig = ""
+            var ncList = ""
+            var daemon = false
+        }
+        let box = ProbeBox()
+        let group = DispatchGroup()
+        group.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            box.routes = HelperService.runProcess("/usr/sbin/netstat", ["-rn", "-f", "inet"], timeoutSeconds: 2).text
+            group.leave()
+        }
+        group.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            box.ifconfig = HelperService.runProcess("/sbin/ifconfig", ["-a"], timeoutSeconds: 2).text
+            group.leave()
+        }
+        group.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            box.ncList = HelperService.runProcess("/usr/sbin/scutil", ["--nc", "list"], timeoutSeconds: 2).text
+            group.leave()
+        }
+        group.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            box.daemon = HelperService.runProcess("/usr/bin/pgrep", ["-x", "kvpncsvc"], timeoutSeconds: 1).ok
+            group.leave()
+        }
+        _ = group.wait(timeout: .now() + 2.5)
+
+        let routes = box.routes
+        let ifconfig = box.ifconfig
+        let ncList = box.ncList
 
         var snap = NetworkSnapshot()
         snap.scannedAt = Date()
         snap.fullTunnelHijack = routes.contains("0/1") || routes.contains("128.0/1")
-        snap.kerioDaemonRunning = HelperService.runProcess("/usr/bin/pgrep", ["-x", "kvpncsvc"], timeoutSeconds: 2).ok
+        snap.kerioDaemonRunning = box.daemon
 
         let session = parseKerioSession(ncList)
         snap.kerioSessionConnected = session.connected

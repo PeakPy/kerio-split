@@ -232,7 +232,7 @@ struct OutboundDashboard: View {
         let series = throughput.series.first { $0.id == "outbound" }
         return SurfaceCard {
             HStack(spacing: 0) {
-                liveMetric("Speed", series?.totalText ?? "—")
+                liveMetric("Speed", series?.totalMbpsText ?? "—")
                 Divider().frame(height: 28)
                 liveMetric("Down", series?.downText ?? "—")
                 Divider().frame(height: 28)

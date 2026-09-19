@@ -5,6 +5,15 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-09-19
+
+### Changed
+
+- Faster UI refresh: parallel network probe, staggered monitor loop, shorter outbound start waits
+- Built-in outbound auto-applies Kerio split when full-tunnel hijack is present (fixes crawl-speed internet)
+- Outbound dial binds to LAN; TUN MTU 1400 + system stack for hotspot-friendly throughput
+- Live rates show Mbps (Speedtest-scale) with snappier 0.5s sampling
+
 ## [1.2.1] - 2026-09-19
 
 ### Added

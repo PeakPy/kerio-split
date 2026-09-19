@@ -529,7 +529,7 @@ cmd_outbound_start() {
     chown "${SUDO_USER}:staff" "$outdir/sing-box.pid" "$outdir/sing-box.log" 2>/dev/null || true
   fi
 
-  sleep 0.9
+  sleep 0.35
   if kill -0 "$pid" 2>/dev/null; then
     log "outbound: running pid=$pid"
     echo "outbound=running pid=$pid"

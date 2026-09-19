@@ -15,6 +15,8 @@ struct ThroughputSeries: Identifiable {
     var downText: String { Self.formatRate(downBps) }
     var upText: String { Self.formatRate(upBps) }
     var totalText: String { Self.formatRate(downBps + upBps) }
+    /// Bits/s label matching Speedtest-style numbers (8× bytes).
+    var totalMbpsText: String { Self.formatMbps(downBps + upBps) }
 
     static func formatRate(_ bps: Double) -> String {
         let v = max(0, bps)
@@ -23,6 +25,15 @@ struct ThroughputSeries: Identifiable {
         if v < 1_048_576 { return String(format: "%.1f KB/s", v / 1024) }
         if v < 1_073_741_824 { return String(format: "%.2f MB/s", v / 1_048_576) }
         return String(format: "%.2f GB/s", v / 1_073_741_824)
+    }
+
+    static func formatMbps(_ bytesPerSec: Double) -> String {
+        // Decimal Mbps (same scale as Speedtest / ISP labels)
+        let mbps = max(0, bytesPerSec) * 8.0 / 1_000_000.0
+        if mbps < 0.05 { return "0 Mbps" }
+        if mbps < 10 { return String(format: "%.2f Mbps", mbps) }
+        if mbps < 100 { return String(format: "%.1f Mbps", mbps) }
+        return String(format: "%.0f Mbps", mbps)
     }
 }
 
@@ -35,7 +46,7 @@ final class ThroughputMonitor: ObservableObject {
     private var lastBytes: [String: (inB: UInt64, outB: UInt64, at: Date)] = [:]
     private let historyLimit = 60
     /// Ignore sub-noise rates so sparklines stay flat when idle.
-    private let noiseFloor: Double = 64
+    private let noiseFloor: Double = 32
     private var tracked: [(id: String, title: String, iface: String, accent: Color)] = []
 
     func start(tracking: [(id: String, title: String, iface: String, accent: Color)]) {
@@ -51,7 +62,7 @@ final class ThroughputMonitor: ObservableObject {
 
         if timer == nil {
             refresh()
-            let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+            let t = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
                 DispatchQueue.main.async { self?.refresh() }
             }
             RunLoop.main.add(t, forMode: .common)
@@ -96,21 +107,23 @@ final class ThroughputMonitor: ObservableObject {
                     if let prev = self.lastBytes[t.iface] {
                         let dt = now.timeIntervalSince(prev.at)
                         // Skip jittery / too-fast ticks
-                        if dt >= 0.75 {
+                        if dt >= 0.35 {
                             // Use saturating subtract — never wrap on counter reset
                             let dinRaw = bytes.inB >= prev.inB ? bytes.inB - prev.inB : 0
                             let doutRaw = bytes.outB >= prev.outB ? bytes.outB - prev.outB : 0
                             var din = Double(dinRaw) / dt
                             var dout = Double(doutRaw) / dt
-                            if din < self.noiseFloor { din = 0 }
-                            if dout < self.noiseFloor { dout = 0 }
                             // Cap absurd spikes (iface recreate mid-sample)
                             if din > 500_000_000 { din = item.downBps }
                             if dout > 500_000_000 { dout = item.upBps }
-                            // EMA smooth — professional chart feel without lagging hard
-                            let alpha = 0.45
-                            din = item.downBps * (1 - alpha) + din * alpha
-                            dout = item.upBps * (1 - alpha) + dout * alpha
+                            // Light smooth — prioritize truthful peaks over "pretty" lag
+                            let alpha = 0.78
+                            if item.downBps > 0 || din > self.noiseFloor {
+                                din = item.downBps * (1 - alpha) + din * alpha
+                            }
+                            if item.upBps > 0 || dout > self.noiseFloor {
+                                dout = item.upBps * (1 - alpha) + dout * alpha
+                            }
                             if din < self.noiseFloor { din = 0 }
                             if dout < self.noiseFloor { dout = 0 }
                             item.downBps = din
@@ -248,12 +261,19 @@ struct ThroughputCard: View {
                         .lineLimit(1)
                 }
                 Spacer(minLength: 4)
-                Text(series.totalText)
-                    .font(.system(size: 15, weight: .bold, design: .rounded))
-                    .foregroundStyle(series.accent)
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text(series.totalMbpsText)
+                        .font(.system(size: 15, weight: .bold, design: .rounded))
+                        .foregroundStyle(series.accent)
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                    Text(series.totalText)
+                        .font(.system(size: 10, weight: .medium, design: .rounded))
+                        .foregroundStyle(Brand.muted)
+                        .monospacedDigit()
+                        .lineLimit(1)
+                }
             }
 
             ThroughputSparkline(down: series.downHistory, up: series.upHistory, accent: series.accent)

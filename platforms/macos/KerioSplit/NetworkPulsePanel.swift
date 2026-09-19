@@ -158,12 +158,19 @@ private struct RatePill: View {
                     .foregroundStyle(Brand.ink)
                     .lineLimit(1)
                 Spacer(minLength: 4)
-                Text(series.totalText)
-                    .font(.system(size: 13, weight: .bold, design: .rounded))
-                    .foregroundStyle(series.accent)
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
+                VStack(alignment: .trailing, spacing: 0) {
+                    Text(series.totalMbpsText)
+                        .font(.system(size: 13, weight: .bold, design: .rounded))
+                        .foregroundStyle(series.accent)
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                    Text(series.totalText)
+                        .font(.system(size: 9, weight: .medium, design: .rounded))
+                        .foregroundStyle(Brand.muted)
+                        .monospacedDigit()
+                        .lineLimit(1)
+                }
             }
 
             ThroughputSparkline(down: series.downHistory, up: series.upHistory, accent: series.accent)

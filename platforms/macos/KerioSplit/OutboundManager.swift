@@ -152,7 +152,11 @@ final class OutboundManager: ObservableObject {
         try data.write(to: storeURL, options: .atomic)
     }
 
-    func connect(profile: OutboundProfile, ignoreInterfaceHint: String = "utun") async -> Bool {
+    func connect(
+        profile: OutboundProfile,
+        bindInterface: String = "",
+        excludeInterfaces: [String] = []
+    ) async -> Bool {
         refreshBinary()
         guard let bin = binaryPath else {
             lastError = "Outbound engine not installed. Tap Install engine."
@@ -162,7 +166,11 @@ final class OutboundManager: ObservableObject {
         statusDetail = "Connecting — \(profile.name)…"
         do {
             try FileManager.default.createDirectory(at: workDir, withIntermediateDirectories: true)
-            let json = try SingBoxConfigBuilder.makeConfig(shareLink: profile.shareLink)
+            let json = try SingBoxConfigBuilder.makeConfig(
+                shareLink: profile.shareLink,
+                bindInterface: bindInterface,
+                excludeInterfaces: excludeInterfaces
+            )
             try json.write(to: configURL, atomically: true, encoding: .utf8)
             await stopAll()
 
@@ -203,7 +211,7 @@ final class OutboundManager: ObservableObject {
             try proc.run()
             process = proc
             usesPrivileged = false
-            try? await Task.sleep(nanoseconds: 900_000_000)
+            try? await Task.sleep(nanoseconds: 350_000_000)
             if !proc.isRunning {
                 let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
                 let errText = String(data: errData, encoding: .utf8) ?? ""
@@ -339,13 +347,57 @@ final class OutboundManager: ObservableObject {
 }
 
 enum SingBoxConfigBuilder {
-    /// TUN inbound + proxy outbound. Tuned for throughput (DNS hijack, sniff, mixed stack)
-    /// so Built-in mode is not dramatically slower than V2Box / Clash / Karing.
-    static func makeConfig(shareLink: String) throws -> String {
-        let outbound = try outboundObject(from: shareLink)
+    /// TUN inbound + proxy outbound.
+    /// Critical for speed with Kerio: dial OUT on the LAN iface (never via Kerio utun),
+    /// and keep MTU realistic (9000 fragments badly on hotspot / VPN paths).
+    static func makeConfig(
+        shareLink: String,
+        bindInterface: String = "",
+        excludeInterfaces: [String] = []
+    ) throws -> String {
+        var outbound = try outboundObject(from: shareLink)
+        let lan = bindInterface.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !lan.isEmpty {
+            // Force the VLESS/VMess dial onto Wi-Fi/Ethernet — not through Kerio.
+            outbound["bind_interface"] = lan
+        }
+
+        var tunInbound: [String: Any] = [
+            "type": "tun",
+            "tag": "tun-in",
+            "address": ["172.19.0.1/30"],
+            // 1500 is safe on hotspot/Wi-Fi; 9000 caused severe fragmentation slowdowns.
+            "mtu": 1400,
+            "auto_route": true,
+            "strict_route": false,
+            "stack": "system"
+        ]
+        let excludes = excludeInterfaces
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && $0 != lan }
+        if !excludes.isEmpty {
+            tunInbound["exclude_interface"] = excludes
+        }
+
+        var route: [String: Any] = [
+            "rules": [
+                ["action": "sniff", "timeout": "100ms"],
+                ["protocol": "dns", "action": "hijack-dns"],
+                // Follow system table for private nets (Kerio CIDRs stay on Kerio utun).
+                ["ip_is_private": true, "outbound": "direct"]
+            ],
+            "final": "proxy"
+        ]
+        if !lan.isEmpty {
+            // Prefer explicit LAN over auto_detect — Kerio full-tunnel hijack confuses detection.
+            route["default_interface"] = lan
+            route["auto_detect_interface"] = false
+        } else {
+            route["auto_detect_interface"] = true
+        }
+
         let root: [String: Any] = [
             "log": ["level": "warn", "timestamp": true],
-            // Without DNS + sniff, every page looks "slow" even when the tunnel is fine.
             "dns": [
                 "servers": [
                     [
@@ -360,42 +412,19 @@ enum SingBoxConfigBuilder {
                     ]
                 ],
                 "rules": [
-                    // Resolve proxy/server names via system DNS (not through the tunnel).
                     ["outbound": "any", "server": "local"]
                 ],
                 "final": "remote",
                 "strategy": "ipv4_only",
                 "independent_cache": true
             ],
-            "inbounds": [[
-                "type": "tun",
-                "tag": "tun-in",
-                "address": ["172.19.0.1/30"],
-                // Other clients commonly use 9000 on utun for better bulk throughput.
-                "mtu": 9000,
-                "auto_route": true,
-                // false: coexist with Kerio utun routes; strict_route steals too aggressively.
-                "strict_route": false,
-                "stack": "mixed"
-            ]],
+            "inbounds": [tunInbound],
             "outbounds": [
                 outbound,
                 ["type": "direct", "tag": "direct"],
                 ["type": "block", "tag": "block"]
             ],
-            "route": [
-                "rules": [
-                    [
-                        "action": "sniff",
-                        "timeout": "300ms"
-                    ],
-                    ["protocol": "dns", "action": "hijack-dns"],
-                    // LAN + Kerio private CIDRs follow the system table (Kerio utun wins).
-                    ["ip_is_private": true, "outbound": "direct"]
-                ],
-                "auto_detect_interface": true,
-                "final": "proxy"
-            ]
+            "route": route
         ]
         let data = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
         guard let text = String(data: data, encoding: .utf8) else {

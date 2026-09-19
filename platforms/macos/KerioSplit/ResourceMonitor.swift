@@ -26,7 +26,7 @@ final class ResourceMonitor: ObservableObject {
     func start() {
         guard timer == nil else { return }
         refresh()
-        let t = Timer(timeInterval: 2.0, repeats: true) { [weak self] _ in
+        let t = Timer(timeInterval: 1.5, repeats: true) { [weak self] _ in
             DispatchQueue.main.async { self?.refresh() }
         }
         RunLoop.main.add(t, forMode: .common)
