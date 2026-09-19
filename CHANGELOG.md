@@ -5,13 +5,23 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-09-19
+
 ### Added
 
 - NetworkSense + scenario-driven Overview UX (conflict, external outbound, repair)
 - Kerio tunnel pin / ignoreInterfaces / route guard (`split-tunnel.sh guard`)
-- Built-in outbound (sing-box) with share-link + subscription import; external mode for V2Box/Clash
+- Built-in outbound (sing-box) with in-app engine install, share-link + subscription import; external mode for V2Box/Clash
+- Unified Network panel (live rates + topology map) on Overview
 - Connectivity probes + network event log on Activity
 - `scripts/fetch-sing-box.sh` to install the outbound sidecar
+
+### Fixed
+
+- Dual-VPN default-on-secondary-utun no longer flagged as a routing conflict
+- Overview Connect/Disconnect actions when built-in outbound is up
+- Kerio active detection when session/tunnel evidence disagrees
+- Outbound ignore list no longer swallows the Kerio utun
 
 ## [1.1.0] - 2026-09-19
 
@@ -39,12 +49,10 @@ First public release.
 
 ### Added
 
-- macOS app with Connect All / Disconnect All through the official Kerio VPN Client
-- Split routes, bypass routes, menu bar, appearance modes
-- `.pkg` installer and uninstaller, plus DMG
 - Non-relocatable install; Connect All resumes after Accessibility is granted
 - Passwordless route helper (one-time install)
 
-[Unreleased]: https://github.com/PeakPy/kerio-split/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/PeakPy/kerio-split/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/PeakPy/kerio-split/releases/tag/v1.2.0
 [1.1.0]: https://github.com/PeakPy/kerio-split/releases/tag/v1.1.0
 [1.0.0]: https://github.com/PeakPy/kerio-split/releases/tag/v1.0.0
