@@ -2,71 +2,134 @@
 
 <img src="assets/branding/banner-hero.png" alt="Kerio Split" width="100%">
 
-Split tunneling for **Kerio Control VPN**.
+**Cross-platform split tunneling companion for Kerio Control VPN.**
 
-Kerio’s client often pushes full-tunnel routes (`0/1` + `128.0/1`). Kerio Split strips that and applies only the routes you configure.
+Kerio’s official client often installs full-tunnel routes (`0.0.0.0/1` + `128.0.0.0/1`). Kerio Split waits for a real tunnel, then replaces that with **only the routes you configure** — so LAN and the rest of the internet stay local.
 
-This project does **not** implement the Kerio VPN protocol. It starts the official client (or an admin-approved IPsec/OpenVPN path), waits for a tunnel, then edits routes. Details: [docs/not-a-kerio-client.md](docs/not-a-kerio-client.md). Kerio® is a trademark of its owners.
-
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![macOS 13+](https://img.shields.io/badge/macOS-13%2B-black.svg)](platforms/macos)
-[![Linux CLI](https://img.shields.io/badge/Linux-CLI-green.svg)](platforms/linux)
-[![Windows](https://img.shields.io/badge/Windows-preview-lightgrey.svg)](platforms/windows)
-
-## Install
-
-Download from [Releases](https://github.com/PeakPy/kerio-split/releases).
-
-| Artifact | Platform |
+| | |
 | --- | --- |
-| `KerioSplit.pkg` / `.dmg` | **macOS** app (Apple Silicon) — primary, best-tested |
-| `keriosplit-*-linux.tar.gz` | **Linux** CLI (`ip route`) — early preview |
-| `keriosplit-*-windows.zip` | **Windows** CLI — early preview (engine stub) |
+| **What it is** | Route companion after the official VPN client is up |
+| **What it is not** | A Kerio protocol client ([why](docs/not-a-kerio-client.md)) |
+| **Platforms** | macOS · Linux · Windows |
+| **License** | [MIT](LICENSE) |
 
-> **Linux & Windows are early previews.** They have not been tested enough in real Kerio setups yet (CI covers dry-run + a Linux Docker route smoke only). Please try them on your machine and **[open an issue with feedback](https://github.com/PeakPy/kerio-split/issues/new/choose)** — what worked, what broke, OS/distro, and steps. That feedback is how these ports become trustworthy.
+[![CI](https://github.com/PeakPy/kerio-split/actions/workflows/ci.yml/badge.svg)](https://github.com/PeakPy/kerio-split/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/PeakPy/kerio-split)](https://github.com/PeakPy/kerio-split/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-### macOS
+---
+
+## Platforms at a glance
+
+| Platform | Deliverable | Maturity | Notes |
+| --- | --- | --- | --- |
+| **macOS** | Native SwiftUI app + menu bar | **Stable** | Connect All / Disconnect All via official Kerio client; passwordless route helper |
+| **Linux** | Portable CLI (`ip route`) | **Early preview** | Works against real `ip`; needs more testing with live Kerio (`kerio-kvc`) |
+| **Windows** | Portable CLI package | **Early preview** | Shared CLI + dry-run today; WinAPI route engine still stubbed |
+
+Same config shape on every OS: [`config/config.example.json`](config/config.example.json).
+
+> **We need your help on Linux & Windows.** Those builds are not battle-tested enough yet. If you try a release archive, please [open a feedback issue](https://github.com/PeakPy/kerio-split/issues/new?template=port_feedback.md) — OS version, what you ran, and what worked or broke.
+
+---
+
+## Download
+
+Get the latest build from **[Releases](https://github.com/PeakPy/kerio-split/releases)**.
+
+| File | Use on |
+| --- | --- |
+| `KerioSplit.pkg` / `KerioSplit.dmg` | macOS (Apple Silicon) |
+| `KerioSplit-Uninstall.pkg` | macOS removal |
+| `keriosplit-*-linux.tar.gz` | Linux |
+| `keriosplit-*-windows.zip` | Windows |
+
+---
+
+## macOS
+
+Native app for macOS 13+ (arm64).
+
+1. Install the `.pkg` (unsigned builds: right-click → **Open**)
+2. Launch **Kerio Split** → **Install route helper** (one admin password)
+3. **Connect All** — starts Kerio, waits for the tunnel, applies split
+4. Manage routes under VPN Routes / Bypass / Settings
+
+Runtime config:
+
+`~/Library/Application Support/KerioSplit/Config/config.json`
+
+Build from source:
 
 ```bash
 make release-macos
 open dist/KerioSplit.pkg
 ```
 
-Unsigned builds: right-click → **Open**.
+Details: [platforms/macos](platforms/macos)
 
-1. Open **Kerio Split**
-2. **Install route helper** (one admin password)
-3. **Connect All**
-4. Edit routes under VPN Routes / Bypass / Settings
+---
 
-Config: `~/Library/Application Support/KerioSplit/Config/config.json`  
-Example: [`config/config.example.json`](config/config.example.json)
+## Linux
 
-### Linux (early preview — please test & report)
+CLI that applies/restores split routes with `iproute2` after Kerio (or another tunnel) is up.
 
-Not production-ready yet. Docker smoke ≠ real Kerio. If you run it, tell us what happened.
+**Preview status:** CI runs unit dry-run + a Docker `ip route` smoke test. Real Kerio on bare metal/VM still needs community validation.
+
+```bash
+# from a release archive
+tar -xzf keriosplit-*-linux.tar.gz && cd keriosplit-*-linux
+./bin/keriosplit ping
+sudo ./bin/keriosplit apply -v
+sudo ./bin/keriosplit restore
+./bin/keriosplit status
+```
+
+From this repo:
 
 ```bash
 make release-linux
-tar -tzf dist/keriosplit-*-linux.tar.gz | head
-# on a Linux host:
-#   tar -xzf keriosplit-*-linux.tar.gz && cd keriosplit-*-linux
-#   sudo ./bin/keriosplit apply -v
+make test-linux-docker   # fake tunnel smoke, no Kerio binary
 ```
 
-See [platforms/linux/README.md](platforms/linux/README.md). Smoke without Kerio: `make test-linux-docker`.
+Requirements: Python 3.9+, `ip` (iproute2), root for apply/restore.  
+Docs: [platforms/linux/README.md](platforms/linux/README.md) · testing notes: [docs/ports.md](docs/ports.md)
 
-### Windows (early preview — please test & report)
+---
 
-Engine is a stub; shared CLI/dry-run only for now. Still useful to validate packaging — please file issues with your results.
+## Windows
+
+CLI package aimed at the same workflow as Linux. The **route engine is still a stub**; shared config parsing and `--platform dry-run` work today.
+
+**Preview status:** not enough real Windows + Kerio testing yet — please report anything you try.
+
+```bat
+REM from a release zip
+set PYTHONPATH=%CD%\lib
+python -m keriosplit ping --platform dry-run
+```
+
+From this repo:
 
 ```bash
 make release-windows
 ```
 
-See [platforms/windows/README.md](platforms/windows/README.md).
+Docs: [platforms/windows/README.md](platforms/windows/README.md)
 
-## Shared CLI (any OS)
+---
+
+## Shared core
+
+All platforms share one Python core for config + engine contract + dry-run:
+
+```text
+core/keriosplit/          config, CLI, dry-run engine
+platforms/macos/          SwiftUI app + helper packaging
+platforms/linux/          iproute2 adapter + Docker smoke
+platforms/windows/        Windows adapter (stub → WinAPI)
+config/                   example config.json
+```
 
 ```bash
 make test-core
@@ -74,21 +137,39 @@ PYTHONPATH=core:platforms/linux:platforms/windows \
   python3 -m keriosplit status --platform dry-run
 ```
 
-## Layout
+Architecture: [docs/architecture.md](docs/architecture.md)
+
+---
+
+## How it works
 
 ```text
-core/              shared Python config + CLI + dry-run
-platforms/macos/   SwiftUI app, helper, pkg/DMG
-platforms/linux/   iproute2 adapter + Docker smoke
-platforms/windows/ WinAPI stub
-config/            shared config example
-docs/              architecture + ports
+Official Kerio client (or IPsec / OpenVPN)
+        ↓  tunnel is up
+Kerio Split engine
+        ↓  remove full-tunnel hijack (optional)
+        ↓  add VPN + bypass CIDRs from config
+Done — only your networks go through the VPN
 ```
+
+---
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Security: [SECURITY.md](SECURITY.md).
+- Branches: `main` (stable / releases), `develop` (integration)
+- macOS packaging and Linux/Windows CLI: see [CONTRIBUTING.md](CONTRIBUTING.md)
+- Port feedback template: [Issues](https://github.com/PeakPy/kerio-split/issues/new/choose)
+- Security: [SECURITY.md](SECURITY.md)
+
+```bash
+make help
+make release-all    # macOS pkg/DMG + Linux tar.gz + Windows zip
+```
+
+---
 
 ## License
 
 [MIT](LICENSE) © Ehsan Akbari
+
+Kerio® is a trademark of its owners. This project is not affiliated with GFI / Kerio.
