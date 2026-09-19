@@ -42,10 +42,8 @@ struct OutboundDashboard: View {
 
     private var outboundIface: String {
         let snap = controller.networkSnapshot
+        if !snap.outboundInterface.isEmpty { return snap.outboundInterface }
         if let t = snap.secondaryTuns.first(where: { $0 != snap.kerioInterface }) { return t }
-        if !snap.defaultOnLAN, snap.defaultInterface.hasPrefix("utun"), snap.defaultInterface != snap.kerioInterface {
-            return snap.defaultInterface
-        }
         return ""
     }
 
@@ -93,6 +91,7 @@ struct OutboundDashboard: View {
         }
         .onDisappear { throughput.stop() }
         .onChange(of: controller.outboundConnected) { _ in syncThroughput() }
+        .onChange(of: controller.networkSnapshot.outboundInterface) { _ in syncThroughput() }
         .onChange(of: controller.networkSnapshot.secondaryTuns) { _ in syncThroughput() }
         .onChange(of: controller.networkSnapshot.defaultInterface) { _ in syncThroughput() }
         .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { date in
@@ -102,6 +101,7 @@ struct OutboundDashboard: View {
 
     private func syncThroughput() {
         var targets: [(id: String, title: String, iface: String, accent: Color)] = []
+        // Outbound page: only profile tunnel (+ LAN path). No Kerio card here.
         if !outboundIface.isEmpty {
             let title = controller.outboundActiveName.isEmpty ? "Outbound" : controller.outboundActiveName
             targets.append((id: "outbound", title: title, iface: outboundIface, accent: Brand.warn))
@@ -110,10 +110,7 @@ struct OutboundDashboard: View {
         if !snap.lanInterface.isEmpty {
             targets.append((id: "lan", title: "LAN", iface: snap.lanInterface, accent: Brand.primarySoft))
         }
-        if !snap.kerioInterface.isEmpty {
-            targets.append((id: "kerio", title: "Kerio", iface: snap.kerioInterface, accent: Brand.primary))
-        }
-        throughput.start(tracking: Array(targets.prefix(3)))
+        throughput.start(tracking: Array(targets.prefix(2)))
     }
 
     // MARK: - Hero
@@ -238,12 +235,7 @@ struct OutboundDashboard: View {
                 Divider().frame(height: 28)
                 liveMetric("Up", series?.upText ?? "—")
                 Divider().frame(height: 28)
-                liveMetric(
-                    "Kerio",
-                    controller.networkSnapshot.kerioInterface.isEmpty
-                        ? "Off"
-                        : controller.networkSnapshot.kerioInterface
-                )
+                liveMetric("Tunnel", outboundIface.isEmpty ? "—" : outboundIface)
                 Divider().frame(height: 28)
                 liveMetric("Split", controller.isActive ? "ON" : "OFF")
             }

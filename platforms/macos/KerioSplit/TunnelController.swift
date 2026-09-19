@@ -981,6 +981,22 @@ final class TunnelController: ObservableObject {
             autoApplyTriggered = false
         }
 
+        // Drop false "Outbound Connected" when engine died or TUN vanished.
+        if outboundConnected {
+            let alive = outboundManager.isEngineAlive()
+            let hasTun = !snap.outboundInterface.isEmpty
+            if !alive || (!hasTun && Date().timeIntervalSince(outboundConnectedAt ?? .distantPast) > 3) {
+                outboundManager.disconnect()
+                outboundConnected = false
+                outboundConnecting = false
+                outboundConnectedAt = nil
+                outboundActiveName = ""
+                outboundStatusDetail = "Disconnected — engine stopped"
+                outboundError = alive ? "Outbound TUN missing" : "Outbound engine exited"
+                recordEvent("Outbound marked down — \(outboundError ?? "engine gone")")
+            }
+        }
+
         if snap.kerioSessionConnected && !wasSession {
             recordEvent("Kerio session Connected — \(snap.kerioSessionLabel)")
         } else if !snap.kerioSessionConnected && wasSession {
@@ -1902,19 +1918,26 @@ final class TunnelController: ObservableObject {
     private func autoIgnoreSecondaryTuns() {
         let kerio = networkSnapshot.kerioInterface
         let pinned = config.options.kerioInterface
+        // Always ignore built-in outbound TUN so it never becomes "Kerio"
+        if !networkSnapshot.outboundInterface.isEmpty,
+           !config.options.ignoreInterfaces.contains(networkSnapshot.outboundInterface) {
+            config.options.ignoreInterfaces.append(networkSnapshot.outboundInterface)
+        }
         for iface in networkSnapshot.secondaryTuns {
-            // Never ignore the Kerio tunnel itself
             if iface == kerio || iface == pinned { continue }
             if !config.options.ignoreInterfaces.contains(iface) {
                 config.options.ignoreInterfaces.append(iface)
             }
         }
-        // Drop accidental ignore of Kerio iface
         if !kerio.isEmpty {
             config.options.ignoreInterfaces.removeAll { $0 == kerio }
         }
         if !pinned.isEmpty {
             config.options.ignoreInterfaces.removeAll { $0 == pinned }
+        }
+        if !networkSnapshot.outboundInterface.isEmpty,
+           !config.options.ignoreInterfaces.contains(networkSnapshot.outboundInterface) {
+            config.options.ignoreInterfaces.append(networkSnapshot.outboundInterface)
         }
         saveConfig(quiet: true)
         probeNetwork()

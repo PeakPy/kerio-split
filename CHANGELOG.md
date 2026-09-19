@@ -5,6 +5,14 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.4] - 2026-09-19
+
+### Fixed
+
+- Built-in outbound TUN (`172.19.0.1`) was mislabeled as Kerio — false Connected, empty SPEED, Kerio flicker
+- Outbound page shows only profile tunnel + LAN rates (no Kerio card)
+- Connect requires TUN to appear; dead engine clears Connected state
+
 ## [1.2.3] - 2026-09-19
 
 ### Fixed

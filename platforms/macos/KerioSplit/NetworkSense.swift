@@ -9,6 +9,8 @@ struct NetworkSnapshot: Equatable {
     var kerioInterface: String = ""
     var kerioGateway: String = ""
     var kerioTunnelAddress: String = ""
+    /// Built-in sing-box TUN (always 172.19.0.1/30) — never Kerio.
+    var outboundInterface: String = ""
     var fullTunnelHijack: Bool = false
     var secondaryTuns: [String] = []
     var allUtuns: [String] = []
@@ -30,15 +32,16 @@ struct NetworkSnapshot: Equatable {
     var vpnSessions: [VPNSession] = []
 
     var hasKerioTunnel: Bool {
-        // Live evidence only — a stale saved gateway must NOT count as "up".
-        kerioSessionConnected
-            || fullTunnelHijack
-            || !kerioInterface.isEmpty
-            || !managedRoutesPresent.isEmpty
+        // Live Kerio evidence only — never treat sing-box 172.19.0.1 as Kerio,
+        // and never count managed routes alone (they can land on the wrong utun).
+        if kerioTunnelAddress.hasPrefix("172.19.0.") { return false }
+        if kerioSessionConnected { return true }
+        if fullTunnelHijack { return true }
+        return !kerioInterface.isEmpty
     }
 
     var hasExternalOutbound: Bool {
-        !secondaryTuns.isEmpty
+        !outboundInterface.isEmpty || !secondaryTuns.isEmpty
     }
 
     var defaultOnLAN: Bool {
@@ -175,19 +178,27 @@ enum NetworkSense {
         let utuns = ipv4TunnelIfaces(from: ifconfig)
         snap.allUtuns = utuns.sorted()
 
+        // Built-in outbound always uses 172.19.0.1/30 — never confuse it with Kerio.
+        let outboundIfaces = Set(utuns.filter { ipv4OnIface($0, ifconfig: ifconfig).hasPrefix("172.19.0.") })
+        snap.outboundInterface = outboundIfaces.sorted().first ?? ""
+        let kerioIgnore = ignore.union(outboundIfaces)
+
         let pinIf = pinnedInterface.trimmingCharacters(in: .whitespacesAndNewlines)
         let pinGw = pinnedGateway.trimmingCharacters(in: .whitespacesAndNewlines)
 
         // 1) Strongest: routing table maps configured VPN CIDRs → iface/gw
-        if let hit = findIfaceForVPNRoutes(vpnRoutes, routes: routes, ignore: ignore) {
+        if let hit = findIfaceForVPNRoutes(vpnRoutes, routes: routes, ignore: kerioIgnore) {
             snap.kerioInterface = hit.iface
             snap.kerioGateway = hit.gateway
             snap.managedRoutesPresent = hit.matched
             snap.tunnelEvidence.append("routes: \(hit.matched.joined(separator: ", ")) → \(hit.iface) via \(hit.gateway)")
         }
 
-        // 2) Pin (only if still up)
-        if snap.kerioInterface.isEmpty, !pinIf.isEmpty, interfaceHasIPv4(pinIf, ifconfig: ifconfig) {
+        // 2) Pin (only if still up and not outbound TUN)
+        if snap.kerioInterface.isEmpty,
+           !pinIf.isEmpty,
+           !kerioIgnore.contains(pinIf),
+           interfaceHasIPv4(pinIf, ifconfig: ifconfig) {
             snap.kerioInterface = pinIf
             snap.tunnelEvidence.append("pin: \(pinIf)")
         }
@@ -195,21 +206,25 @@ enum NetworkSense {
         // 3) Full-tunnel hijack iface
         if snap.kerioInterface.isEmpty,
            let fromHijack = interfaceForPrefix("0/1", routes: routes),
-           !ignore.contains(fromHijack) {
+           !kerioIgnore.contains(fromHijack) {
             snap.kerioInterface = fromHijack
             snap.tunnelEvidence.append("hijack 0/1 on \(fromHijack)")
         }
 
         // 4) Session connected + pick best utun (prefer non-ignored with IPv4)
         if snap.kerioInterface.isEmpty, session.connected {
-            if let best = utuns.first(where: { !ignore.contains($0) }) {
+            if let best = utuns.first(where: { !kerioIgnore.contains($0) }) {
                 snap.kerioInterface = best
                 snap.tunnelEvidence.append("session Connected → iface \(best)")
-            } else if let any = utuns.first {
-                // All tuns ignored by mistake — still bind Kerio session to a tun
-                snap.kerioInterface = any
-                snap.tunnelEvidence.append("session Connected → iface \(any) (was ignored)")
             }
+        }
+
+        // Absolute guard: never label sing-box as Kerio
+        if outboundIfaces.contains(snap.kerioInterface) {
+            snap.tunnelEvidence.append("ignored outbound TUN \(snap.kerioInterface) as Kerio")
+            snap.kerioInterface = ""
+            snap.kerioGateway = ""
+            snap.managedRoutesPresent = []
         }
 
         // Do NOT treat "daemon running" alone as a tunnel — kvpncsvc stays up while Disconnected.
@@ -225,13 +240,21 @@ enum NetworkSense {
 
         if !snap.kerioInterface.isEmpty {
             snap.kerioTunnelAddress = ipv4OnIface(snap.kerioInterface, ifconfig: ifconfig)
+            if snap.kerioTunnelAddress.hasPrefix("172.19.0.") {
+                snap.kerioInterface = ""
+                snap.kerioGateway = ""
+                snap.kerioTunnelAddress = ""
+            }
         }
 
         if !snap.kerioInterface.isEmpty {
             snap.secondaryTuns = utuns.filter { $0 != snap.kerioInterface }
         } else {
-            snap.secondaryTuns = utuns.filter { ignore.contains($0) }
+            snap.secondaryTuns = Array(outboundIfaces) + utuns.filter { ignore.contains($0) && !outboundIfaces.contains($0) }
         }
+        // Dedupe preserve order
+        var seen = Set<String>()
+        snap.secondaryTuns = snap.secondaryTuns.filter { seen.insert($0).inserted }
 
         snap.dnsServers = currentDNS()
 
@@ -306,6 +329,14 @@ enum NetworkSense {
                 : "\(snapshot.kerioInterface) addr \(snapshot.kerioTunnelAddress.isEmpty ? "?" : snapshot.kerioTunnelAddress) gw \(snapshot.kerioGateway.isEmpty ? "?" : snapshot.kerioGateway)"
         ))
 
+        if !snapshot.outboundInterface.isEmpty {
+            items.append(DiagnosticItem(
+                id: "outbound-tun",
+                title: "Built-in outbound TUN",
+                status: .ok,
+                detail: "\(snapshot.outboundInterface) addr 172.19.0.1 (sing-box — not Kerio)"
+            ))
+        }
         items.append(DiagnosticItem(
             id: "hijack",
             title: "Full-tunnel hijack (0/1)",

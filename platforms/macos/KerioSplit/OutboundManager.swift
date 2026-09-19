@@ -183,6 +183,18 @@ final class OutboundManager: ObservableObject {
                     HelperService.runCtl(["outbound-start", bin, cfgPath])
                 }.value
                 if result.ok {
+                    // Confirm TUN actually came up — otherwise UI shows Connected while dead.
+                    let tunUp = await Self.waitForOutboundTun(timeoutSeconds: 2.5)
+                    if !tunUp {
+                        _ = await Task.detached(priority: .userInitiated) {
+                            HelperService.runCtl(["outbound-stop"])
+                        }.value
+                        lastError = "Outbound TUN did not appear (172.19.0.1). Engine started then exited — check Activity / sing-box.log"
+                        isConnected = false
+                        statusDetail = "Connection failed"
+                        usesPrivileged = false
+                        return false
+                    }
                     usesPrivileged = true
                     process = nil
                     isConnected = true
@@ -224,6 +236,14 @@ final class OutboundManager: ObservableObject {
                 isConnected = false
                 statusDetail = "Connection failed"
                 process = nil
+                return false
+            }
+            let tunUp = await Self.waitForOutboundTun(timeoutSeconds: 2.0)
+            if !tunUp {
+                stopProcess()
+                lastError = "Outbound TUN did not appear (172.19.0.1)"
+                isConnected = false
+                statusDetail = "Connection failed"
                 return false
             }
             isConnected = true
@@ -316,6 +336,47 @@ final class OutboundManager: ObservableObject {
             throw NSError(domain: "KerioSplit", code: 3, userInfo: [NSLocalizedDescriptionKey: "No nodes found in subscription body"])
         }
         return profiles
+    }
+
+    /// True while our sing-box process (or privileged pid) is still alive.
+    func isEngineAlive() -> Bool {
+        if let proc = process { return proc.isRunning }
+        let pidURL = workDir.appendingPathComponent("sing-box.pid")
+        guard let text = try? String(contentsOf: pidURL, encoding: .utf8) else { return false }
+        let pid = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let value = Int32(pid), value > 1 else { return false }
+        return kill(value, 0) == 0
+    }
+
+    private static func waitForOutboundTun(timeoutSeconds: TimeInterval) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while Date() < deadline {
+            if findOutboundTunIface() != nil { return true }
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        return findOutboundTunIface() != nil
+    }
+
+    static func findOutboundTunIface() -> String? {
+        let result = HelperService.runProcess("/sbin/ifconfig", ["-a"], timeoutSeconds: 2)
+        guard result.ok else { return nil }
+        var current: String?
+        for raw in result.text.split(separator: "\n") {
+            let line = String(raw)
+            if let colon = line.firstIndex(of: ":") {
+                let name = String(line[..<colon])
+                if name.hasPrefix("utun") {
+                    current = name
+                } else if !line.hasPrefix("\t") && !line.hasPrefix(" ") {
+                    current = nil
+                }
+            }
+            guard let iface = current else { continue }
+            if line.contains("inet 172.19.0.") {
+                return iface
+            }
+        }
+        return nil
     }
 
     private func stopProcess() {
