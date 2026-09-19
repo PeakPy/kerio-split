@@ -5,6 +5,13 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.3] - 2026-09-19
+
+### Fixed
+
+- VLESS/VMess WebSocket `ed=` early-data was left inside the path (e.g. `/x?ed=2560`); now maps to `max_early_data` like Karing — major throughput fix for WS nodes
+- FakeIP DNS + TCP fast open + WS mux for plain VLESS WS/gRPC
+
 ## [1.2.2] - 2026-09-19
 
 ### Changed

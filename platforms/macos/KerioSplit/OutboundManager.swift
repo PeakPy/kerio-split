@@ -99,7 +99,6 @@ final class OutboundManager: ObservableObject {
             }
             try FileManager.default.copyItem(at: found, to: dest)
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dest.path)
-            // Clear quarantine so Gatekeeper doesn't block first run
             let xattr = Process()
             xattr.executableURL = URL(fileURLWithPath: "/usr/bin/xattr")
             xattr.arguments = ["-cr", dest.path]
@@ -174,7 +173,6 @@ final class OutboundManager: ObservableObject {
             try json.write(to: configURL, atomically: true, encoding: .utf8)
             await stopAll()
 
-            // TUN + auto_route needs root on macOS — prefer passwordless helper when available.
             let helperReady = await Task.detached(priority: .userInitiated) {
                 HelperService.canRunPasswordless()
             }.value
@@ -251,7 +249,6 @@ final class OutboundManager: ObservableObject {
             atPath: workDir.appendingPathComponent("sing-box.pid").path
         )
         if needPrivilegedStop && HelperService.filesPresent {
-            // runCtl is blocking — keep it off the main actor via semaphore-free fire on a queue
             let group = DispatchGroup()
             group.enter()
             DispatchQueue.global(qos: .userInitiated).async {
@@ -289,7 +286,6 @@ final class OutboundManager: ObservableObject {
             .split(whereSeparator: \.isNewline)
             .map { String($0).trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
-        // Prefer the last concrete error line; drop pure noise.
         let useful = lines.filter { line in
             let lower = line.lowercased()
             return lower.contains("error")
@@ -347,9 +343,7 @@ final class OutboundManager: ObservableObject {
 }
 
 enum SingBoxConfigBuilder {
-    /// TUN inbound + proxy outbound.
-    /// Critical for speed with Kerio: dial OUT on the LAN iface (never via Kerio utun),
-    /// and keep MTU realistic (9000 fragments badly on hotspot / VPN paths).
+    /// Match fast clients (Karing): FakeIP, WS early-data, TFO, mux on plain WS.
     static func makeConfig(
         shareLink: String,
         bindInterface: String = "",
@@ -357,8 +351,9 @@ enum SingBoxConfigBuilder {
     ) throws -> String {
         var outbound = try outboundObject(from: shareLink)
         let lan = bindInterface.trimmingCharacters(in: .whitespacesAndNewlines)
+        outbound["tcp_fast_open"] = true
+        outbound["udp_fragment"] = true
         if !lan.isEmpty {
-            // Force the VLESS/VMess dial onto Wi-Fi/Ethernet — not through Kerio.
             outbound["bind_interface"] = lan
         }
 
@@ -366,30 +361,28 @@ enum SingBoxConfigBuilder {
             "type": "tun",
             "tag": "tun-in",
             "address": ["172.19.0.1/30"],
-            // 1500 is safe on hotspot/Wi-Fi; 9000 caused severe fragmentation slowdowns.
-            "mtu": 1400,
+            "mtu": 9000,
             "auto_route": true,
-            "strict_route": false,
-            "stack": "system"
+            "strict_route": true,
+            "stack": "mixed"
         ]
         let excludes = excludeInterfaces
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty && $0 != lan }
         if !excludes.isEmpty {
             tunInbound["exclude_interface"] = excludes
+            tunInbound["strict_route"] = false
         }
 
         var route: [String: Any] = [
             "rules": [
-                ["action": "sniff", "timeout": "100ms"],
+                ["action": "sniff", "timeout": "50ms"],
                 ["protocol": "dns", "action": "hijack-dns"],
-                // Follow system table for private nets (Kerio CIDRs stay on Kerio utun).
                 ["ip_is_private": true, "outbound": "direct"]
             ],
             "final": "proxy"
         ]
         if !lan.isEmpty {
-            // Prefer explicit LAN over auto_detect — Kerio full-tunnel hijack confuses detection.
             route["default_interface"] = lan
             route["auto_detect_interface"] = false
         } else {
@@ -400,19 +393,17 @@ enum SingBoxConfigBuilder {
             "log": ["level": "warn", "timestamp": true],
             "dns": [
                 "servers": [
-                    [
-                        "tag": "remote",
-                        "address": "8.8.8.8",
-                        "detour": "proxy"
-                    ],
-                    [
-                        "tag": "local",
-                        "address": "local",
-                        "detour": "direct"
-                    ]
+                    ["tag": "remote", "address": "8.8.8.8", "detour": "proxy"],
+                    ["tag": "local", "address": "local", "detour": "direct"],
+                    ["tag": "fakeip", "address": "fakeip"]
                 ],
                 "rules": [
-                    ["outbound": "any", "server": "local"]
+                    ["outbound": "any", "server": "local"],
+                    ["query_type": ["A", "AAAA"], "server": "fakeip"]
+                ],
+                "fakeip": [
+                    "enabled": true,
+                    "inet4_range": "198.18.0.0/15"
                 ],
                 "final": "remote",
                 "strategy": "ipv4_only",
@@ -478,10 +469,21 @@ enum SingBoxConfigBuilder {
             out["tls"] = tlsObj
         }
         if let net = (obj["net"] as? String)?.lowercased(), net == "ws" {
+            var path = obj["path"] as? String ?? ""
+            var early: Int?
+            let stripped = stripEarlyData(fromPath: path)
+            path = stripped.path
+            early = stripped.early
+            if let ed = obj["ed"] as? Int { early = ed }
+            if let ed = Int(obj["ed"] as? String ?? "") { early = ed }
             var transport: [String: Any] = ["type": "ws"]
-            if let path = obj["path"] as? String, !path.isEmpty { transport["path"] = path }
+            if !path.isEmpty { transport["path"] = path }
             if let hostHeader = obj["host"] as? String, !hostHeader.isEmpty {
                 transport["headers"] = ["Host": hostHeader]
+            }
+            if let early, early > 0 {
+                transport["max_early_data"] = early
+                transport["early_data_header_name"] = "Sec-WebSocket-Protocol"
             }
             out["transport"] = transport
         }
@@ -522,11 +524,22 @@ enum SingBoxConfigBuilder {
             }
             out["tls"] = tls
         }
-        if let flow = query["flow"], !flow.isEmpty {
+        let flow = query["flow"] ?? ""
+        if !flow.isEmpty {
             out["flow"] = flow
         }
         if let transport = transportObject(from: query) {
             out["transport"] = transport
+        }
+        let transportType = (query["type"] ?? query["net"] ?? "tcp").lowercased()
+        if flow.isEmpty, transportType == "ws" || transportType == "websocket" || transportType == "grpc" {
+            out["multiplex"] = [
+                "enabled": true,
+                "protocol": "h2mux",
+                "max_connections": 8,
+                "min_streams": 4,
+                "padding": false
+            ]
         }
         return out
     }
@@ -559,10 +572,20 @@ enum SingBoxConfigBuilder {
         let type = (query["type"] ?? query["net"] ?? "tcp").lowercased()
         switch type {
         case "ws", "websocket":
+            var path = (query["path"] ?? "").removingPercentEncoding ?? (query["path"] ?? "")
+            var early = Int(query["ed"] ?? "")
+            let stripped = stripEarlyData(fromPath: path)
+            path = stripped.path
+            if early == nil { early = stripped.early }
             var t: [String: Any] = ["type": "ws"]
-            if let path = query["path"], !path.isEmpty { t["path"] = path.removingPercentEncoding ?? path }
+            if !path.isEmpty { t["path"] = path }
             if let host = query["host"], !host.isEmpty {
                 t["headers"] = ["Host": host]
+            }
+            // ed=2560 must be max_early_data — never left in the path (Karing does this).
+            if let early, early > 0 {
+                t["max_early_data"] = early
+                t["early_data_header_name"] = "Sec-WebSocket-Protocol"
             }
             return t
         case "grpc":
@@ -579,6 +602,20 @@ enum SingBoxConfigBuilder {
         default:
             return nil
         }
+    }
+
+    /// `/path?ed=2560` → (`/path`, 2560)
+    private static func stripEarlyData(fromPath path: String) -> (path: String, early: Int?) {
+        guard let q = path.firstIndex(of: "?") else { return (path, nil) }
+        let base = String(path[..<q])
+        let query = String(path[path.index(after: q)...])
+        var early: Int?
+        for part in query.split(separator: "&") {
+            let kv = part.split(separator: "=", maxSplits: 1).map(String.init)
+            guard kv.count == 2, kv[0] == "ed", let v = Int(kv[1]), v > 0 else { continue }
+            early = v
+        }
+        return (base, early)
     }
 
     private static func pad(_ s: String) -> String {
