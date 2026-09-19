@@ -5,6 +5,14 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- NetworkSense + scenario-driven Overview UX (conflict, external outbound, repair)
+- Kerio tunnel pin / ignoreInterfaces / route guard (`split-tunnel.sh guard`)
+- Built-in outbound (sing-box) with share-link + subscription import; external mode for V2Box/Clash
+- Connectivity probes + network event log on Activity
+- `scripts/fetch-sing-box.sh` to install the outbound sidecar
+
 ## [1.1.0] - 2026-09-19
 
 ### Added

@@ -35,8 +35,39 @@ final class TunnelController: ObservableObject {
     @Published var standardVPN = StandardVPNStatus.empty
     /// Connect All paused until Accessibility is granted; then it resumes automatically.
     @Published var waitingForAccessibility = false
+    @Published var networkSnapshot = NetworkSnapshot()
+    @Published var scenario = ScenarioPresentation(
+        scenario: .idleReady,
+        title: "Ready",
+        detail: "Install the helper, then Connect All.",
+        tone: .neutral,
+        actions: []
+    )
+    @Published var connectivity = ConnectivityReport()
+    @Published var networkEvents: [NetworkEvent] = []
+    @Published var outboundStore = OutboundStore.default
+    @Published var outboundConnected = false
+    @Published var outboundConnecting = false
+    @Published var outboundError: String?
+    @Published var outboundBinaryPath: String?
+    @Published var outboundStatusDetail = "Not connected"
+    @Published var outboundEngineBusy = false
+    @Published var outboundEngineProgress = ""
+    @Published var outboundConnectedAt: Date?
+    @Published var outboundActiveName = ""
+    @Published var diagnosticReport = DiagnosticReport()
+    @Published var kerioSessionConnected = false
+    @Published var kerioSessionLabel = ""
 
     private static let resumeConnectKey = "kerioSplit.resumeConnectAfterRelaunch"
+    private lazy var outboundManager: OutboundManager = {
+        let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("KerioSplit", isDirectory: true)
+        return OutboundManager(supportRoot: root)
+    }()
+    private let eventLog = NetworkEventLog()
+    private var lastConflictDetail = ""
+    private var guardInFlight = false
 
     static func connectTimeline(helperReady: Bool) -> [FlowStep] {
         [
@@ -65,7 +96,7 @@ final class TunnelController: ObservableObject {
     }
 
     var canDisconnectAll: Bool {
-        (isActive || kerioTunnelSeen || sessionPhase == .connected)
+        (isActive || kerioTunnelSeen || kerioSessionConnected || outboundConnected || sessionPhase == .connected)
             && !isBusy
             && sessionPhase != .connecting
             && sessionPhase != .waitingForPermission
@@ -178,6 +209,8 @@ final class TunnelController: ObservableObject {
             self.refreshVPNHelpers()
             self.refreshClickPermission()
             self.syncTimelineFromReality()
+            self.reloadOutboundStore()
+            self.refreshScenario()
             let resumeConnect = UserDefaults.standard.bool(forKey: Self.resumeConnectKey)
             if resumeConnect {
                 UserDefaults.standard.set(false, forKey: Self.resumeConnectKey)
@@ -220,11 +253,13 @@ final class TunnelController: ObservableObject {
 
     func startMonitoring() {
         guard pollTimer == nil else { return }
-        let timer = Timer(timeInterval: 45, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
             DispatchQueue.main.async {
                 self?.detectApplied()
                 self?.probeNetwork()
                 self?.refreshHelperStatus()
+                self?.runRouteGuardIfNeeded()
+                self?.refreshConnectivity()
             }
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -768,8 +803,30 @@ final class TunnelController: ObservableObject {
                 self.updateStep("split", .done, "Split ON — only VPN routes use Kerio.")
                 self.pinStatus("Split ON — VPN routes + bypass applied")
                 self.notify(title: "Split tunneling ON", body: "VPN routes applied. General traffic uses LAN.")
+                self.recordEvent("Split applied")
+                self.learnPinFromSnapshot()
             } else {
                 self.updateStep("split", .failed, "Split apply failed. See Activity.")
+                self.recordEvent("Split apply failed")
+            }
+            self.probeNetwork()
+        }
+    }
+
+    func repairRoutes() {
+        guard helperReady else {
+            pinStatus("Install the route helper first", seconds: 8)
+            return
+        }
+        recordEvent("Repair routes requested")
+        runEngine(arguments: ["guard"]) { [weak self] ok, output in
+            guard let self else { return }
+            if ok || output.contains("guard=") {
+                self.pinStatus(output.contains("repaired") ? "Kerio routes repaired" : "Kerio routes OK", seconds: 6)
+                self.recordEvent(output.trimmingCharacters(in: .whitespacesAndNewlines))
+            } else {
+                // Fall back to full apply
+                self.apply()
             }
             self.probeNetwork()
         }
@@ -778,6 +835,10 @@ final class TunnelController: ObservableObject {
     /// Restore split routes, then click Disconnect in the official VPN client (or stop L2TP/OpenVPN).
     func disconnectAll() {
         guard !isBusy else { return }
+        // Built-in outbound must drop with Disconnect All
+        if outboundConnected {
+            disconnectOutbound()
+        }
         connectAllTask?.cancel()
         connectAllTask = nil
         isWaitingForKerio = false
@@ -854,12 +915,22 @@ final class TunnelController: ObservableObject {
     }
 
     func probeNetwork() {
+        let opts = config.options
+        let routes = config.vpnRoutes
+        let active = isActive
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            let result = Self.scanNetwork()
+            let snap = NetworkSense.scan(
+                pinnedInterface: opts.kerioInterface,
+                pinnedGateway: opts.kerioGateway,
+                ignoreInterfaces: opts.ignoreInterfaces,
+                vpnRoutes: routes,
+                splitActive: active
+            )
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.applyNetworkScan(result)
+                self.applyNetworkSnapshot(snap)
                 self.maybeAutoApplySplit()
+                self.refreshScenario()
                 if !self.isBusy, self.sessionPhase == .idle || self.sessionPhase == .connected {
                     self.syncTimelineFromReality()
                 }
@@ -868,19 +939,52 @@ final class TunnelController: ObservableObject {
         refreshVPNHelpers()
     }
 
-    private func applyNetworkScan(_ result: (hasKerio: Bool, utuns: [String], hasHijack: Bool)) {
+    private func applyNetworkSnapshot(_ snap: NetworkSnapshot) {
         let wasSeen = kerioWasSeen
-        kerioTunnelSeen = result.hasKerio
-        tunnelInterfaces = result.utuns
-        fullTunnelHijackSeen = result.hasHijack
+        let wasSession = kerioSessionConnected
+        networkSnapshot = snap
+        kerioTunnelSeen = snap.hasKerioTunnel
+        kerioSessionConnected = snap.kerioSessionConnected
+        kerioSessionLabel = snap.kerioSessionLabel
+        tunnelInterfaces = snap.allUtuns
+        fullTunnelHijackSeen = snap.fullTunnelHijack
         kerioClientInstalled = KerioLauncher.isInstalled
 
-        if result.hasKerio && !wasSeen {
+        if snap.hasKerioTunnel && !wasSeen {
             kerioWasSeen = true
-        } else if !result.hasKerio {
+            let evidence = snap.tunnelEvidence.isEmpty
+                ? (snap.kerioInterface.isEmpty ? "session/routes" : snap.kerioInterface)
+                : snap.tunnelEvidence.joined(separator: "; ")
+            recordEvent("Kerio tunnel UP — \(evidence)")
+        } else if !snap.hasKerioTunnel && wasSeen {
             kerioWasSeen = false
             autoApplyTriggered = false
+            recordEvent("Kerio tunnel DOWN")
+        } else if !snap.hasKerioTunnel {
+            autoApplyTriggered = false
         }
+
+        if snap.kerioSessionConnected && !wasSession {
+            recordEvent("Kerio session Connected — \(snap.kerioSessionLabel)")
+        } else if !snap.kerioSessionConnected && wasSession {
+            recordEvent("Kerio session Disconnected")
+        }
+
+        if snap.conflict, snap.conflictDetail != lastConflictDetail {
+            lastConflictDetail = snap.conflictDetail
+            recordEvent("Conflict: \(snap.conflictDetail)")
+        } else if !snap.conflict {
+            lastConflictDetail = ""
+        }
+
+        if isActive, !snap.kerioInterface.isEmpty, config.options.kerioInterface.isEmpty {
+            config.options.kerioInterface = snap.kerioInterface
+            if !snap.kerioGateway.isEmpty { config.options.kerioGateway = snap.kerioGateway }
+            saveConfig(quiet: true)
+            recordEvent("Auto-pinned Kerio \(snap.kerioInterface)")
+        }
+
+        refreshDiagnostics()
     }
 
     private func maybeAutoApplySplit() {
@@ -895,41 +999,21 @@ final class TunnelController: ObservableObject {
         apply()
     }
 
+    private func applyNetworkScan(_ result: (hasKerio: Bool, utuns: [String], hasHijack: Bool)) {
+        // Kept for binary compatibility of older call sites — redirect.
+        _ = result
+        probeNetwork()
+    }
+
     private nonisolated static func scanNetwork() -> (hasKerio: Bool, utuns: [String], hasHijack: Bool) {
-        let routes = HelperService.runProcess("/usr/sbin/netstat", ["-rn", "-f", "inet"], timeoutSeconds: 3).text
-        let hijack = routes.contains("0/1") || routes.contains("128.0/1")
-
-        var utunsFromRoutes = Set<String>()
-        for line in routes.split(separator: "\n") {
-            let parts = line.split(whereSeparator: \.isWhitespace).map(String.init)
-            guard let iface = parts.last, iface.hasPrefix("utun") else { continue }
-            utunsFromRoutes.insert(iface)
-        }
-
-        let ifconfig = HelperService.runProcess("/sbin/ifconfig", [], timeoutSeconds: 3).text
-        var candidates: [String] = []
-        var current: String?
-        for raw in ifconfig.split(separator: "\n") {
-            let line = String(raw)
-            if line.hasPrefix("utun"), let name = line.split(separator: ":").first {
-                current = String(name)
-                continue
-            }
-            guard let iface = current else { continue }
-            if line.hasPrefix("\t") || line.hasPrefix(" ") {
-                // Match split-tunnel.sh: any IPv4 on utun (not only 10.x / 172.x)
-                if line.range(of: #"inet \d+\.\d+\.\d+\.\d+"#, options: .regularExpression) != nil {
-                    candidates.append(iface)
-                    current = nil
-                }
-            } else if !line.isEmpty {
-                current = nil
-            }
-        }
-
-        let list = Array(Set(candidates + utunsFromRoutes)).sorted()
-        let hasKerio = !list.isEmpty || hijack
-        return (hasKerio, list, hijack)
+        let snap = NetworkSense.scan(
+            pinnedInterface: "",
+            pinnedGateway: "",
+            ignoreInterfaces: [],
+            vpnRoutes: [],
+            splitActive: false
+        )
+        return (snap.hasKerioTunnel, snap.allUtuns, snap.fullTunnelHijack)
     }
 
     private func requestNotificationsIfNeeded() {
@@ -1438,6 +1522,320 @@ final class TunnelController: ObservableObject {
             return "VPN tunnel up · full-tunnel routes present"
         }
         return "VPN tunnel detected"
+    }
+
+    // MARK: - Smart network / outbound
+
+    func refreshScenario() {
+        let activeName = outboundStore.profiles.first(where: { $0.id == outboundStore.activeProfileId })?.name ?? ""
+        scenario = ScenarioEngine.evaluate(
+            helperReady: helperReady,
+            canClickKerio: canClickKerio,
+            sessionPhase: sessionPhase,
+            waitingForAccessibility: waitingForAccessibility,
+            isActive: isActive,
+            snapshot: networkSnapshot,
+            outboundMode: config.options.outboundMode,
+            outboundConnected: outboundConnected,
+            outboundProfileName: activeName
+        )
+        networkEvents = eventLog.events
+        outboundConnected = outboundManager.isConnected
+        outboundBinaryPath = outboundManager.binaryPath
+        outboundError = outboundManager.lastError
+        outboundStatusDetail = outboundManager.statusDetail
+        outboundConnectedAt = outboundManager.connectedAt
+        outboundActiveName = outboundManager.activeProfileName
+        refreshDiagnostics()
+    }
+
+    func refreshDiagnostics() {
+        diagnosticReport = NetworkSense.diagnose(
+            helperReady: helperReady,
+            canClickKerio: canClickKerio,
+            isActive: isActive,
+            snapshot: networkSnapshot,
+            vpnRoutes: config.vpnRoutes,
+            connectivity: connectivity,
+            kerioInstalled: kerioClientInstalled
+        )
+    }
+
+    func copyDiagnostics() {
+        refreshDiagnostics()
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(diagnosticReport.plainText, forType: .string)
+        pinStatus("Diagnostics copied", seconds: 4)
+        recordEvent("Diagnostics copied to clipboard")
+    }
+
+    func performScenarioAction(_ action: ScenarioAction) {
+        switch action.kind {
+        case .installHelper: installHelper()
+        case .openAccessibility: grantClickKerio()
+        case .connectAll: connectAll()
+        case .disconnectAll: requestDisconnect()
+        case .openKerio: openKerioClient()
+        case .repairRoutes: repairRoutes()
+        case .openOutbound:
+            NotificationCenter.default.post(name: .kerioSplitNavigate, object: AppSection.outbound)
+        case .openSettings:
+            NotificationCenter.default.post(name: .kerioSplitNavigate, object: AppSection.settings)
+        case .cancelConnect: cancelConnectAll()
+        }
+    }
+
+    func pinDetectedKerioTunnel() {
+        let snap = networkSnapshot
+        guard !snap.kerioInterface.isEmpty else { return }
+        config.options.kerioInterface = snap.kerioInterface
+        if !snap.kerioGateway.isEmpty {
+            config.options.kerioGateway = snap.kerioGateway
+        }
+        saveConfig()
+        recordEvent("Pinned Kerio \(snap.kerioInterface) / \(snap.kerioGateway)")
+        probeNetwork()
+    }
+
+    func setOutboundMode(_ mode: OutboundMode) {
+        config.options.outboundMode = mode
+        if mode != .builtIn, outboundConnected {
+            disconnectOutbound()
+        }
+        saveConfig()
+        refreshScenario()
+    }
+
+    func addIgnoreInterface(_ raw: String) {
+        let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !s.isEmpty else { return }
+        if !config.options.ignoreInterfaces.contains(s) {
+            config.options.ignoreInterfaces.append(s)
+            saveConfig()
+            recordEvent("Ignore iface \(s)")
+            probeNetwork()
+        }
+    }
+
+    func removeIgnoreInterface(_ iface: String) {
+        config.options.ignoreInterfaces.removeAll { $0 == iface }
+        saveConfig()
+        probeNetwork()
+    }
+
+    func reloadOutboundStore() {
+        outboundManager.refreshBinary()
+        outboundStore = outboundManager.loadStore()
+        outboundBinaryPath = outboundManager.binaryPath
+        outboundConnected = outboundManager.isConnected
+        outboundStatusDetail = outboundManager.statusDetail
+        outboundError = outboundManager.lastError
+        outboundConnectedAt = outboundManager.connectedAt
+        outboundActiveName = outboundManager.activeProfileName
+        refreshScenario()
+    }
+
+    func installOutboundEngine() async {
+        outboundEngineBusy = true
+        outboundEngineProgress = "Starting…"
+        outboundError = nil
+        // Mirror progress while downloading
+        let progressTask = Task { @MainActor in
+            while !Task.isCancelled {
+                outboundEngineProgress = outboundManager.engineProgress.isEmpty
+                    ? outboundEngineProgress
+                    : outboundManager.engineProgress
+                try? await Task.sleep(nanoseconds: 200_000_000)
+            }
+        }
+        let ok = await outboundManager.installEngine()
+        progressTask.cancel()
+        outboundBinaryPath = outboundManager.binaryPath
+        outboundError = outboundManager.lastError
+        outboundStatusDetail = outboundManager.statusDetail
+        outboundEngineBusy = false
+        outboundEngineProgress = ""
+        if ok {
+            recordEvent("Outbound engine installed")
+            pinStatus("Outbound engine ready", seconds: 5)
+        } else {
+            recordEvent("Outbound engine install failed — \(outboundError ?? "?")")
+        }
+        refreshScenario()
+    }
+
+    func importOutboundLinks(_ raw: String) {
+        let profiles = SubscriptionParser.parseImport(raw)
+        guard !profiles.isEmpty else {
+            outboundError = "No share links found"
+            refreshScenario()
+            return
+        }
+        outboundStore.profiles.append(contentsOf: profiles)
+        if outboundStore.activeProfileId == nil {
+            outboundStore.activeProfileId = profiles.first?.id
+        }
+        try? outboundManager.saveStore(outboundStore)
+        recordEvent("Imported \(profiles.count) outbound profile(s)")
+        outboundError = nil
+        pinStatus("Imported \(profiles.count) profile(s)", seconds: 4)
+        refreshScenario()
+    }
+
+    func removeOutboundProfile(_ id: String) {
+        outboundStore.profiles.removeAll { $0.id == id }
+        if outboundStore.activeProfileId == id {
+            outboundStore.activeProfileId = outboundStore.profiles.first?.id
+        }
+        try? outboundManager.saveStore(outboundStore)
+        refreshScenario()
+    }
+
+    func fetchOutboundSubscription(url: String, name: String) async {
+        setBusy(true, watchdogSeconds: 40)
+        do {
+            let profiles = try await outboundManager.fetchSubscription(urlString: url, name: name)
+            let sub = OutboundSubscription(name: name, url: url, lastFetchedAt: Date(), profileIds: profiles.map(\.id))
+            outboundStore.subscriptions.append(sub)
+            outboundStore.profiles.append(contentsOf: profiles)
+            if outboundStore.activeProfileId == nil {
+                outboundStore.activeProfileId = profiles.first?.id
+            }
+            try outboundManager.saveStore(outboundStore)
+            recordEvent("Fetched subscription “\(name)” — \(profiles.count) node(s)")
+            outboundError = nil
+            pinStatus("Subscription imported — \(profiles.count) nodes", seconds: 6)
+        } catch {
+            outboundError = error.localizedDescription
+            recordEvent("Subscription fetch failed: \(error.localizedDescription)")
+            pinStatus("Subscription fetch failed", seconds: 6)
+        }
+        setBusy(false)
+        refreshScenario()
+    }
+
+    func connectOutbound(profileId: String) async {
+        guard config.options.outboundMode == .builtIn else {
+            outboundError = "Switch mode to Built-in first"
+            refreshScenario()
+            return
+        }
+        guard outboundBinaryPath != nil || outboundManager.hasEngine else {
+            outboundError = "Install the outbound engine first"
+            refreshScenario()
+            return
+        }
+        guard let profile = outboundStore.profiles.first(where: { $0.id == profileId }) else { return }
+        outboundConnecting = true
+        outboundStatusDetail = "Connecting — \(profile.name)…"
+        outboundError = nil
+        setBusy(true, watchdogSeconds: 30)
+        outboundStore.activeProfileId = profileId
+        try? outboundManager.saveStore(outboundStore)
+        let ok = await outboundManager.connect(profile: profile)
+        outboundConnected = outboundManager.isConnected
+        outboundStatusDetail = outboundManager.statusDetail
+        outboundError = outboundManager.lastError
+        outboundConnecting = false
+        outboundConnectedAt = outboundManager.connectedAt
+        outboundActiveName = outboundManager.activeProfileName
+        if ok {
+            recordEvent("Outbound connected — \(profile.name)")
+            pinStatus("Connected — \(profile.name)", seconds: 6)
+            probeNetwork()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+                self?.autoIgnoreSecondaryTuns()
+            }
+        } else {
+            recordEvent("Outbound failed — \(outboundError ?? "?")")
+            pinStatus("Outbound failed", seconds: 5)
+        }
+        setBusy(false)
+        refreshScenario()
+    }
+
+    func disconnectOutbound() {
+        outboundManager.disconnect()
+        outboundConnected = false
+        outboundConnecting = false
+        outboundStatusDetail = outboundManager.statusDetail
+        outboundConnectedAt = nil
+        outboundActiveName = ""
+        outboundError = nil
+        recordEvent("Outbound disconnected")
+        pinStatus("Outbound disconnected", seconds: 4)
+        probeNetwork()
+        refreshScenario()
+    }
+
+    private func autoIgnoreSecondaryTuns() {
+        let kerio = networkSnapshot.kerioInterface
+        let pinned = config.options.kerioInterface
+        for iface in networkSnapshot.secondaryTuns {
+            // Never ignore the Kerio tunnel itself
+            if iface == kerio || iface == pinned { continue }
+            if !config.options.ignoreInterfaces.contains(iface) {
+                config.options.ignoreInterfaces.append(iface)
+            }
+        }
+        // Drop accidental ignore of Kerio iface
+        if !kerio.isEmpty {
+            config.options.ignoreInterfaces.removeAll { $0 == kerio }
+        }
+        if !pinned.isEmpty {
+            config.options.ignoreInterfaces.removeAll { $0 == pinned }
+        }
+        saveConfig(quiet: true)
+        probeNetwork()
+    }
+
+    private func runRouteGuardIfNeeded() {
+        guard config.options.routeGuardEnabled, isActive, helperReady, !isBusy, !guardInFlight else { return }
+        guard networkSnapshot.conflict || !networkSnapshot.managedRoutesMissing.isEmpty else { return }
+        guardInFlight = true
+        runEngine(arguments: ["guard"], keepBusy: false) { [weak self] ok, output in
+            guard let self else { return }
+            self.guardInFlight = false
+            if ok || output.contains("guard=") {
+                self.recordEvent("Guard: \(output.trimmingCharacters(in: .whitespacesAndNewlines))")
+            }
+            self.probeNetwork()
+        }
+    }
+
+    private func refreshConnectivity() {
+        let gw = networkSnapshot.lanGateway
+        let sample = config.vpnRoutes.first ?? ""
+        let kerioGw = networkSnapshot.kerioGateway
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let report = ConnectivityProbe.probe(
+                lanGateway: gw,
+                sampleKerioHost: sample,
+                kerioGateway: kerioGw
+            )
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.connectivity = report
+                self.refreshDiagnostics()
+            }
+        }
+    }
+
+    private func learnPinFromSnapshot() {
+        let snap = networkSnapshot
+        if config.options.kerioInterface.isEmpty, !snap.kerioInterface.isEmpty {
+            config.options.kerioInterface = snap.kerioInterface
+        }
+        if config.options.kerioGateway.isEmpty, !snap.kerioGateway.isEmpty {
+            config.options.kerioGateway = snap.kerioGateway
+        }
+        saveConfig(quiet: true)
+    }
+
+    private func recordEvent(_ message: String) {
+        eventLog.record(message)
+        networkEvents = eventLog.events
+        appendLog(message)
     }
 
     private func appendLog(_ text: String) {

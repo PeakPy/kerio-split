@@ -64,5 +64,20 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, 0)
 
 
+class NetworkSenseTests(unittest.TestCase):
+    def test_conflict_when_tunnel_gone(self):
+        from keriosplit.network import evaluate_conflict
+
+        bad, msg = evaluate_conflict(split_active=True, has_kerio=False, missing_routes=[])
+        self.assertTrue(bad)
+        self.assertIn("disappeared", msg)
+
+    def test_no_conflict_when_idle(self):
+        from keriosplit.network import evaluate_conflict
+
+        bad, _ = evaluate_conflict(split_active=False, has_kerio=False, missing_routes=["1.2.3.0/24"])
+        self.assertFalse(bad)
+
+
 if __name__ == "__main__":
     raise SystemExit(unittest.main(verbosity=2))

@@ -17,6 +17,11 @@
     "notifyOnChange": true,
     "connectBackend": "kerioClient",
     "systemVPNName": "",
-    "openvpnConfigPath": ""
+    "openvpnConfigPath": "",
+    "kerioInterface": "",
+    "kerioGateway": "",
+    "ignoreInterfaces": [],
+    "routeGuardEnabled": true,
+    "outboundMode": "external"
   }
 }

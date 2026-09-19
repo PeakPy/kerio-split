@@ -29,6 +29,8 @@ Kerio’s official client often installs full-tunnel routes (`0.0.0.0/1` + `128.
 
 Same config shape on every OS: [`config/config.example.json`](config/config.example.json).
 
+macOS also offers **Outbound** (built-in sing-box or external V2Box/Clash), Kerio **pin/ignore**, and **route guard** so a second VPN does not steal corporate CIDRs.
+
 > **We need your help on Linux & Windows.** Those builds are not battle-tested enough yet. If you try a release archive, please [open a feedback issue](https://github.com/PeakPy/kerio-split/issues/new?template=port_feedback.md) — OS version, what you ran, and what worked or broke.
 
 ---

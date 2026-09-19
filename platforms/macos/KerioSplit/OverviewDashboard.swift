@@ -5,21 +5,71 @@ struct OverviewDashboard: View {
     @ObservedObject var controller: TunnelController
     var onNavigate: (AppSection) -> Void
     @StateObject private var resources = ResourceMonitor()
+    @StateObject private var throughput = ThroughputMonitor()
 
     var body: some View {
         PageScroll {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 18) {
                 heroBanner
                 processCard
+                NetworkPulsePanel(
+                    snapshot: controller.networkSnapshot,
+                    splitActive: controller.isActive,
+                    outboundConnected: controller.outboundConnected,
+                    series: throughput.series,
+                    onRefresh: {
+                        controller.probeNetwork()
+                        controller.refreshDiagnostics()
+                        syncThroughputTargets()
+                    }
+                )
                 liveRow
                 systemCard
                 workspaceRow
             }
         }
-        .onAppear { resources.start() }
-        .onDisappear { resources.stop() }
+        .onAppear {
+            resources.start()
+            syncThroughputTargets()
+        }
+        .onDisappear {
+            resources.stop()
+            throughput.stop()
+        }
+        .onChange(of: controller.networkSnapshot.kerioInterface) { _ in syncThroughputTargets() }
+        .onChange(of: controller.networkSnapshot.defaultInterface) { _ in syncThroughputTargets() }
+        .onChange(of: controller.isActive) { _ in syncThroughputTargets() }
+        .onChange(of: controller.outboundConnected) { _ in syncThroughputTargets() }
     }
 
+    private func syncThroughputTargets() {
+        var targets: [(id: String, title: String, iface: String, accent: Color)] = []
+        let snap = controller.networkSnapshot
+
+        if !snap.kerioInterface.isEmpty {
+            targets.append((id: "kerio", title: "Kerio", iface: snap.kerioInterface, accent: Brand.primary))
+        }
+
+        let outboundIfaces = snap.secondaryTuns.filter { $0 != snap.kerioInterface }
+        if let first = outboundIfaces.first {
+            let title: String = {
+                if !controller.outboundActiveName.isEmpty { return controller.outboundActiveName }
+                if controller.outboundConnected { return "Outbound" }
+                return snap.vpnSessions.first(where: { $0.isConnected && $0.kind != .kerio })?.shortProvider
+                    ?? "External VPN"
+            }()
+            targets.append((id: "outbound", title: title, iface: first, accent: Brand.warn))
+        } else if !snap.defaultOnLAN, snap.defaultInterface.hasPrefix("utun"), snap.defaultInterface != snap.kerioInterface {
+            let title = controller.outboundActiveName.isEmpty ? "Internet VPN" : controller.outboundActiveName
+            targets.append((id: "default-tun", title: title, iface: snap.defaultInterface, accent: Brand.warn))
+        }
+
+        if !snap.lanInterface.isEmpty {
+            targets.append((id: "lan", title: "LAN", iface: snap.lanInterface, accent: Brand.primarySoft))
+        }
+
+        throughput.start(tracking: Array(targets.prefix(3)))
+    }
     // MARK: - Hero
 
     private var heroBanner: some View {
@@ -41,7 +91,12 @@ struct OverviewDashboard: View {
                 HStack(spacing: 8) {
                     statusChip(title: controller.isActive ? "Split ON" : "Split OFF", lit: controller.isActive)
                     statusChip(title: controller.helperReady ? "Helper" : "Setup", lit: controller.helperReady)
-                    statusChip(title: controller.kerioTunnelSeen ? "VPN up" : "VPN down", lit: controller.kerioTunnelSeen)
+                    statusChip(
+                        title: (controller.kerioSessionConnected || controller.kerioTunnelSeen)
+                            ? "Kerio on"
+                            : "Kerio off",
+                        lit: controller.kerioSessionConnected || controller.kerioTunnelSeen
+                    )
                     Spacer(minLength: 0)
                     phaseBadge
                 }
@@ -194,37 +249,29 @@ struct OverviewDashboard: View {
             VStack(alignment: .leading, spacing: 16) {
                 HStack(alignment: .top) {
                     SectionLabel(
-                        title: processTitle,
-                        subtitle: processSubtitle
+                        title: controller.scenario.title,
+                        subtitle: controller.scenario.detail
                     )
                     Spacer(minLength: 8)
-                    if controller.sessionPhase == .connecting || controller.sessionPhase == .waitingForPermission {
-                        Button("Cancel") { controller.cancelConnectAll() }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                    }
+                    scenarioToneBadge
                 }
 
-                if controller.sessionPhase == .waitingForPermission {
-                    Text("Turn on Kerio Split in Privacy → Accessibility, then return to this window. No need to cancel — we resume for you.")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Brand.warn)
-                        .fixedSize(horizontal: false, vertical: true)
-                    ButtonRow {
-                        Button("Open Accessibility") { controller.grantClickKerio() }
+                if !controller.scenario.actions.isEmpty {
+                    HStack(spacing: 8) {
+                        ForEach(Array(controller.scenario.actions.enumerated()), id: \.element.id) { index, action in
+                            Button(action.title) {
+                                controller.performScenarioAction(action)
+                            }
                             .buttonStyle(.borderedProminent)
-                            .tint(Brand.deep)
-                        Button("Relaunch & continue") { controller.relaunchToContinueConnect() }
-                            .buttonStyle(.bordered)
+                            .tint(index == 0 ? Brand.deep : Brand.muted)
+                            .controlSize(index == 0 ? .regular : .small)
+                        }
                     }
+                    .disabled(controller.isBusy && controller.sessionPhase != .waitingForPermission)
                 }
 
-                if controller.sessionPhase == .idle, controller.helperReady {
-                    Text("Ready when you are — Connect All starts Kerio, waits for the VPN, then applies your routes.")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Brand.muted)
-                        .fixedSize(horizontal: false, vertical: true)
-                } else {
+                if controller.sessionPhase == .connecting || controller.sessionPhase == .waitingForPermission
+                    || controller.sessionPhase == .disconnecting {
                     ProcessTimeline(steps: controller.processSteps, phase: controller.sessionPhase)
                         .animation(.spring(response: 0.44, dampingFraction: 0.86), value: controller.processSteps)
                 }
@@ -232,85 +279,141 @@ struct OverviewDashboard: View {
         }
     }
 
-    private var processTitle: String {
-        switch controller.sessionPhase {
-        case .idle: return controller.helperReady ? "Ready" : "Setup needed"
-        case .connecting: return "Turning everything on"
-        case .waitingForPermission: return "Waiting for Accessibility"
-        case .connected: return "All on"
-        case .disconnecting: return "Turning everything off"
-        }
-    }
-
-    private var processSubtitle: String {
-        switch controller.sessionPhase {
-        case .idle:
-            return controller.helperReady
-                ? "Connect All starts Kerio, waits for the VPN, then applies split. Disconnect All reverses that."
-                : "Install the route helper once. After that, Connect All / Disconnect All stay passwordless."
-        case .connecting:
-            return "Official Kerio client → VPN tunnel → split routes. Lights turn on in order."
-        case .waitingForPermission:
-            return "macOS blocks clicking Kerio until this app is allowed. After you enable it, Connect All continues on its own."
-        case .connected:
-            return "Helper, Kerio session, tunnel, and split are all active."
-        case .disconnecting:
-            return "Split comes off first, then Kerio Disconnect. Lights turn off after the last step."
-        }
+    private var scenarioToneBadge: some View {
+        let color: Color = {
+            switch controller.scenario.tone {
+            case .good: return Brand.success
+            case .warn: return Brand.warn
+            case .danger: return Brand.danger
+            case .info: return Brand.primary
+            case .neutral: return Brand.muted
+            }
+        }()
+        return Text(controller.scenario.scenario.rawValue)
+            .font(.system(size: 9, weight: .bold, design: .rounded))
+            .foregroundStyle(color)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Capsule().fill(color.opacity(0.12)))
     }
 
     // MARK: - Live row
 
     private var liveRow: some View {
-        HStack(alignment: .top, spacing: 12) {
-            SurfaceCard(padding: 14) {
-                VStack(alignment: .leading, spacing: 10) {
-                    Label(controller.kerioTunnelSeen ? "VPN tunnel" : "No tunnel", systemImage: controller.kerioTunnelSeen ? "network" : "network.slash")
-                        .font(.system(size: 13, weight: .semibold, design: .rounded))
-                        .foregroundStyle(controller.kerioTunnelSeen ? Brand.primary : Brand.muted)
-                    Text(networkDetail)
-                        .font(.system(size: 11))
-                        .foregroundStyle(Brand.muted)
-                        .fixedSize(horizontal: false, vertical: true)
-                    HStack(spacing: 8) {
-                        Button("Refresh network") {
-                            controller.probeNetwork()
-                            controller.refreshHelperStatus(forceLog: true)
-                        }
-                        if !controller.kerioTunnelSeen {
-                            Button("Open Kerio") { controller.openKerioClient() }
-                        }
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .top, spacing: 12) {
+                kerioStatusCard
+                healthCard
+            }
+            VStack(alignment: .leading, spacing: 12) {
+                kerioStatusCard
+                healthCard
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var kerioStatusCard: some View {
+        SurfaceCard(padding: 14) {
+            VStack(alignment: .leading, spacing: 10) {
+                Label(
+                    controller.kerioSessionConnected
+                        ? "Kerio connected"
+                        : (controller.networkSnapshot.hasKerioTunnel ? "Tunnel up" : "Kerio disconnected"),
+                    systemImage: (controller.kerioSessionConnected || controller.networkSnapshot.hasKerioTunnel) ? "network" : "network.slash"
+                )
+                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .foregroundStyle((controller.kerioSessionConnected || controller.networkSnapshot.hasKerioTunnel) ? Brand.primary : Brand.muted)
+
+                networkSenseLines
+
+                HStack(spacing: 8) {
+                    Button("Refresh") {
+                        controller.probeNetwork()
+                        controller.refreshHelperStatus(forceLog: true)
+                        syncThroughputTargets()
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(controller.isBusy)
+                    if !controller.kerioTunnelSeen {
+                        Button("Open Kerio") { controller.openKerioClient() }
+                    }
+                    if controller.networkSnapshot.conflict {
+                        Button("Repair") { controller.repairRoutes() }
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(controller.isBusy)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var healthCard: some View {
+        SurfaceCard(padding: 14) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Health")
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .foregroundStyle(Brand.ink)
+                Text(controller.connectivity.detail.isEmpty ? "Probing…" : controller.connectivity.detail)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Brand.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    miniStat(title: "CPU", value: resources.cpuText)
+                    miniStat(title: "App RAM", value: resources.appMemoryText)
+                    miniStat(title: "Mem", value: String(format: "%.0f%%", resources.systemPercent))
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
 
-            SurfaceCard(padding: 14) {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("This Mac")
-                        .font(.system(size: 13, weight: .semibold, design: .rounded))
-                        .foregroundStyle(Brand.ink)
-                    HStack(spacing: 8) {
-                        miniStat(title: "CPU", value: resources.cpuText)
-                        miniStat(title: "App RAM", value: resources.appMemoryText)
-                        miniStat(title: "Mem", value: String(format: "%.0f%%", resources.systemPercent))
-                    }
-                }
+    private var networkSenseLines: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(networkDetail)
+                .font(.system(size: 11))
+                .foregroundStyle(Brand.muted)
+                .fixedSize(horizontal: false, vertical: true)
+            if !controller.networkSnapshot.kerioInterface.isEmpty {
+                Text("Kerio \(controller.networkSnapshot.kerioInterface) · gw \(controller.networkSnapshot.kerioGateway)")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(Brand.muted)
+            }
+            Text("Default \(controller.networkSnapshot.defaultInterface.isEmpty ? "?" : controller.networkSnapshot.defaultInterface) · hijack \(controller.networkSnapshot.fullTunnelHijack ? "yes" : "no")")
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(Brand.muted)
+            if !controller.networkSnapshot.secondaryTuns.isEmpty {
+                Text("Other tun: \(controller.networkSnapshot.secondaryTuns.joined(separator: ", "))")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(Brand.warn)
             }
         }
     }
 
     private var networkDetail: String {
+        if controller.networkSnapshot.conflict {
+            return controller.networkSnapshot.conflictDetail
+        }
+        if controller.kerioSessionConnected {
+            let label = controller.kerioSessionLabel.isEmpty ? "Kerio" : controller.kerioSessionLabel
+            if controller.isActive {
+                return "Session Connected (\(label)) · split ON"
+            }
+            return "Session Connected (\(label)) · tap Connect All to apply split"
+        }
+        if controller.isActive {
+            if controller.networkSnapshot.hasExternalOutbound {
+                return "Split ON · external outbound detected — Kerio CIDRs guarded"
+            }
+            return "Split ON · corporate CIDRs on Kerio · internet on LAN"
+        }
         if controller.kerioTunnelSeen {
-            if controller.isActive { return "VPN tunnel up · split routes active" }
             if controller.fullTunnelHijackSeen {
                 return "VPN is routing everything — Connect All to restore split"
             }
-            return "VPN tunnel up · tap Connect All to apply split"
+            return "Tunnel interface up · tap Connect All to apply split"
         }
-        return "Connect All opens the official Kerio client, then applies split."
+        return "Kerio session is Disconnected. Connect in Kerio, then Connect All."
     }
 
     private func miniStat(title: String, value: String) -> some View {
@@ -323,6 +426,7 @@ struct OverviewDashboard: View {
                 .foregroundStyle(Brand.ink)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
+                .monospacedDigit()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(8)
@@ -397,17 +501,16 @@ struct OverviewDashboard: View {
 
     private var workspaceRow: some View {
         LazyVGrid(
-            columns: [
-                GridItem(.flexible(), spacing: 10),
-                GridItem(.flexible(), spacing: 10)
-            ],
+            columns: [GridItem(.adaptive(minimum: 220, maximum: 420), spacing: 10)],
             spacing: 10
         ) {
             ShortcutTile(title: "VPN Routes", subtitle: "\(controller.config.vpnRoutes.count) via Kerio", icon: "point.3.connected.trianglepath.dotted", action: { onNavigate(.vpnRoutes) })
             ShortcutTile(title: "Bypass", subtitle: "\(controller.config.bypassRoutes.count) stay on LAN", icon: "arrow.triangle.branch", action: { onNavigate(.bypass) })
-            ShortcutTile(title: "Settings", subtitle: "DNS & behavior", icon: "gearshape.fill", action: { onNavigate(.settings) })
-            ShortcutTile(title: "Activity", subtitle: "Engine log", icon: "list.bullet.rectangle", action: { onNavigate(.activity) })
+            ShortcutTile(title: "Outbound", subtitle: controller.config.options.outboundMode.title, icon: "arrow.up.right.circle.fill", action: { onNavigate(.outbound) })
+            ShortcutTile(title: "Settings", subtitle: "Pin, guard, DNS", icon: "gearshape.fill", action: { onNavigate(.settings) })
+            ShortcutTile(title: "Activity", subtitle: "Engine + network events", icon: "list.bullet.rectangle", action: { onNavigate(.activity) })
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

@@ -111,6 +111,7 @@ swiftc -parse-as-library \
   "$APP_SRC/KerioSplitApp.swift" \
   "$APP_SRC/ContentView.swift" \
   "$APP_SRC/OverviewDashboard.swift" \
+  "$APP_SRC/OutboundDashboard.swift" \
   "$APP_SRC/MenuBarContent.swift" \
   "$APP_SRC/ResourceMonitor.swift" \
   "$APP_SRC/TunnelController.swift" \
@@ -121,6 +122,15 @@ swiftc -parse-as-library \
   "$APP_SRC/AppConfig.swift" \
   "$APP_SRC/HelperService.swift" \
   "$APP_SRC/UIComponents.swift" \
+  "$APP_SRC/NetworkSense.swift" \
+  "$APP_SRC/ScenarioEngine.swift" \
+  "$APP_SRC/OutboundModels.swift" \
+  "$APP_SRC/OutboundManager.swift" \
+  "$APP_SRC/NetworkEventLog.swift" \
+  "$APP_SRC/ActivityDashboard.swift" \
+  "$APP_SRC/VPNTopologyView.swift" \
+  "$APP_SRC/NetworkPulsePanel.swift" \
+  "$APP_SRC/ThroughputMonitor.swift" \
   -o "$MACOS/KerioSplit" \
   -sdk "$SDK" \
   -target "$TARGET" \
@@ -204,6 +214,7 @@ UNINSTALL_RESOURCES="$DIST/pkg-uninstall-resources"
 rm -rf "$UNINSTALL_RESOURCES"
 mkdir -p "$UNINSTALL_RESOURCES"
 cp "$SCRIPTS/pkg/uninstall-welcome.html" "$UNINSTALL_RESOURCES/welcome.html"
+cp "$SCRIPTS/pkg/uninstall-readme.html" "$UNINSTALL_RESOURCES/readme.html"
 cp "$SCRIPTS/pkg/uninstall-conclusion.html" "$UNINSTALL_RESOURCES/conclusion.html"
 sed "s/version=\"__VERSION__\"/version=\"$PKG_VERSION\"/" \
   "$SCRIPTS/pkg/uninstall-distribution.xml" > "$DIST/uninstall-distribution.xml"
@@ -238,8 +249,9 @@ Install
 
 Uninstall
 1. Double-click "Uninstall Kerio Split.pkg"
-2. Enter your Mac password when asked
-3. The app, helper, and Kerio Split support files are removed
+2. Read the welcome notes (macOS still shows an "Install" button — that button uninstalls)
+3. Enter your Mac password when asked
+4. The app, helper, and Kerio Split support files are removed
 TXT
 
 rm -f "$DMG" "$DIST/rw.dmg"

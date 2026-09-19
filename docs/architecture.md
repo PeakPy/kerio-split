@@ -28,6 +28,8 @@ PYTHONPATH=core:platforms/linux:platforms/windows \
 
 Platforms: `dry-run` (CI), `linux`, `windows` (stub).
 
+macOS 1.1+ adds **NetworkSense**, **route guard**, **Kerio pin / ignoreInterfaces**, scenario UX, and optional **built-in outbound** (sing-box + subscription import). See Outbound in the app; install the binary with `scripts/fetch-sing-box.sh`.
+
 See [ports.md](ports.md) for Docker / VM testing without owning those machines day-to-day.
 
 ## macOS (shipping)

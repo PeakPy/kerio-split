@@ -5,12 +5,13 @@
     <domains enable_anywhere="false" enable_currentUserHome="false" enable_localSystem="true"/>
     <options customize="never" require-scripts="true" rootVolumeOnly="true"/>
     <welcome file="welcome.html" mime-type="text/html"/>
+    <readme file="readme.html" mime-type="text/html"/>
     <conclusion file="conclusion.html" mime-type="text/html"/>
     <pkg-ref id="dev.ehsanakbari.KerioSplit.uninstall"/>
     <choices-outline>
         <line choice="default"/>
     </choices-outline>
-    <choice id="default" title="Uninstall" visible="false">
+    <choice id="default" title="Remove Kerio Split" description="Deletes the app, route helper, and Kerio Split settings." visible="false">
         <pkg-ref id="dev.ehsanakbari.KerioSplit.uninstall"/>
     </choice>
     <pkg-ref id="dev.ehsanakbari.KerioSplit.uninstall" version="__VERSION__" auth="Root" onConclusion="none">KerioSplit-uninstall-component.pkg</pkg-ref>

@@ -153,6 +153,7 @@ enum AppSection: String, CaseIterable, Identifiable, Hashable {
     case overview
     case vpnRoutes
     case bypass
+    case outbound
     case settings
     case json
     case activity
@@ -164,6 +165,7 @@ enum AppSection: String, CaseIterable, Identifiable, Hashable {
         case .overview: return "Overview"
         case .vpnRoutes: return "VPN Routes"
         case .bypass: return "Bypass"
+        case .outbound: return "Outbound"
         case .settings: return "Settings"
         case .json: return "JSON"
         case .activity: return "Activity"
@@ -175,6 +177,7 @@ enum AppSection: String, CaseIterable, Identifiable, Hashable {
         case .overview: return "bolt.horizontal.circle.fill"
         case .vpnRoutes: return "point.3.connected.trianglepath.dotted"
         case .bypass: return "arrow.triangle.branch"
+        case .outbound: return "arrow.up.right.circle.fill"
         case .settings: return "gearshape.fill"
         case .json: return "curlybraces"
         case .activity: return "list.bullet.rectangle"

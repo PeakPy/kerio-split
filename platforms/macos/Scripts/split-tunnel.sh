@@ -94,6 +94,47 @@ except Exception:
 PY
 }
 
+json_opt_str() {
+  local key="$1"
+  /usr/bin/python3 - "$CONFIG_FILE" "$key" <<'PY' 2>/dev/null || true
+import json, sys
+path, key = sys.argv[1], sys.argv[2]
+try:
+    with open(path) as f:
+        data = json.load(f)
+    opts = data.get("options") or {}
+    val = str(opts.get(key) or "").strip()
+    if val:
+        print(val)
+except Exception:
+    pass
+PY
+}
+
+json_ignore_ifaces() {
+  /usr/bin/python3 - "$CONFIG_FILE" <<'PY' 2>/dev/null || true
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        data = json.load(f)
+    for d in (data.get("options") or {}).get("ignoreInterfaces") or []:
+        s = str(d).strip()
+        if s:
+            print(s)
+except Exception:
+    pass
+PY
+}
+
+iface_ignored() {
+  local ifc="$1" ign
+  while IFS= read -r ign; do
+    [[ -z "$ign" ]] && continue
+    [[ "$ifc" == "$ign" ]] && return 0
+  done < <(json_ignore_ifaces)
+  return 1
+}
+
 is_cidr_or_ip() {
   [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]+)?$ ]]
 }
@@ -164,12 +205,28 @@ primary_network_service() {
 }
 
 detect_vpn_interface() {
-  local from_route ifc inet
-  from_route="$(vpn_fulltunnel_interface || true)"
-  [[ -n "$from_route" ]] && { echo "$from_route"; return 0; }
+  local pinned from_route ifc inet
+  pinned="$(json_opt_str kerioInterface || true)"
+  if [[ -n "$pinned" ]]; then
+    if ifconfig "$pinned" 2>/dev/null | grep -q 'inet '; then
+      echo "$pinned"; return 0
+    fi
+    log "pinned iface $pinned has no IPv4 — falling back to auto-detect"
+  fi
+  # Prefer saved VPN_IF from last apply if still up and not ignored
   load_state
+  if [[ -n "${VPN_IF:-}" ]] && ! iface_ignored "$VPN_IF"; then
+    if ifconfig "$VPN_IF" 2>/dev/null | grep -q 'inet '; then
+      echo "$VPN_IF"; return 0
+    fi
+  fi
+  from_route="$(vpn_fulltunnel_interface || true)"
+  if [[ -n "$from_route" ]] && ! iface_ignored "$from_route"; then
+    echo "$from_route"; return 0
+  fi
   for ifc in $(ifconfig -l); do
     case "$ifc" in utun*|kvnet*|kerio*) ;; *) continue ;; esac
+    iface_ignored "$ifc" && continue
     inet="$(ifconfig "$ifc" 2>/dev/null | awk '/inet /{print $2; exit}')"
     [[ -n "$inet" ]] || continue
     if [[ -n "${BEFORE_IFACES:-}" && " ${BEFORE_IFACES} " != *" $ifc "* ]]; then
@@ -177,16 +234,25 @@ detect_vpn_interface() {
     fi
   done
   for ifc in $(ifconfig -l); do
-    case "$ifc" in utun*) ;; *) continue ;; esac
+    case "$ifc" in utun*|kvnet*|kerio*) ;; *) continue ;; esac
+    iface_ignored "$ifc" && continue
     if ifconfig "$ifc" 2>/dev/null | grep -q 'inet '; then echo "$ifc"; return 0; fi
   done
   return 1
 }
 
 detect_vpn_gateway() {
-  local gw ifc inet
+  local pinned gw ifc inet
+  pinned="$(json_opt_str kerioGateway || true)"
+  if [[ -n "$pinned" ]]; then
+    echo "$pinned"; return 0
+  fi
   gw="$(vpn_fulltunnel_gateway || true)"
   [[ -n "$gw" ]] && { echo "$gw"; return 0; }
+  load_state
+  if [[ -n "${VPN_GW:-}" ]]; then
+    echo "$VPN_GW"; return 0
+  fi
   ifc="$(detect_vpn_interface || true)"
   [[ -n "$ifc" ]] || return 1
   inet="$(ifconfig "$ifc" 2>/dev/null | awk '/inet /{print $2; exit}')"
@@ -411,13 +477,45 @@ cmd_restore() {
   log "managed routes removed"
 }
 
+# Re-assert vpnRoutes only (no DNS/default churn). Used by route guard.
+cmd_guard() {
+  need_root
+  load_state
+  [[ -n "$(state_get APPLIED_AT)" ]] || die "split not applied — nothing to guard"
+
+  local vpn_if vpn_gw
+  vpn_if="$(detect_vpn_interface || true)"
+  vpn_gw="$(detect_vpn_gateway || true)"
+  [[ -n "$vpn_if" && -n "$vpn_gw" ]] || die "Kerio tunnel not found for guard"
+
+  local t missing=0
+  while IFS= read -r t; do
+    [[ -z "$t" ]] && continue
+    if ! netstat -rn -f inet 2>/dev/null | awk -v d="$t" 'index($1,d)==1 || $1==d { found=1 } END{ exit !found }'; then
+      missing=1
+      break
+    fi
+  done < <(read_vpn_routes)
+
+  if [[ "$missing" -eq 0 ]]; then
+    log "guard: vpn routes OK"
+    echo "guard=ok"
+    return 0
+  fi
+
+  log "guard: re-adding vpn routes via $vpn_if ($vpn_gw)"
+  add_route_list vpn "$vpn_gw" "$vpn_if" < <(read_vpn_routes)
+  echo "guard=repaired iface=$vpn_if gw=$vpn_gw"
+}
+
 main() {
   case "${1:-}" in
     capture) cmd_capture ;;
     apply) cmd_apply ;;
     restore) cmd_restore ;;
     status) cmd_status ;;
-    *) echo "Usage: sudo $0 capture|apply|restore|status"; exit 1 ;;
+    guard) cmd_guard ;;
+    *) echo "Usage: sudo $0 capture|apply|restore|status|guard"; exit 1 ;;
   esac
 }
 

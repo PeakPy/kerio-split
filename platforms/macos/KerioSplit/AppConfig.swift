@@ -64,6 +64,15 @@ struct AppConfig: Codable, Equatable {
         var connectBackend: ConnectBackend
         var systemVPNName: String
         var openvpnConfigPath: String
+        /// Pin Kerio tunnel interface (e.g. utun3). Empty = auto-detect / auto-learn.
+        var kerioInterface: String
+        /// Pin Kerio gateway. Empty = auto.
+        var kerioGateway: String
+        /// Tunnel ifaces to never treat as Kerio (Clash, V2Box, built-in outbound, …).
+        var ignoreInterfaces: [String]
+        /// Re-assert vpnRoutes when they disappear while split is ON.
+        var routeGuardEnabled: Bool
+        var outboundMode: OutboundMode
 
         static let `default` = Options(
             removeFullTunnel: true,
@@ -78,7 +87,12 @@ struct AppConfig: Codable, Equatable {
             notifyOnChange: true,
             connectBackend: .kerioClient,
             systemVPNName: "",
-            openvpnConfigPath: ""
+            openvpnConfigPath: "",
+            kerioInterface: "",
+            kerioGateway: "",
+            ignoreInterfaces: [],
+            routeGuardEnabled: true,
+            outboundMode: .external
         )
 
         init(
@@ -94,7 +108,12 @@ struct AppConfig: Codable, Equatable {
             notifyOnChange: Bool,
             connectBackend: ConnectBackend,
             systemVPNName: String,
-            openvpnConfigPath: String
+            openvpnConfigPath: String,
+            kerioInterface: String,
+            kerioGateway: String,
+            ignoreInterfaces: [String],
+            routeGuardEnabled: Bool,
+            outboundMode: OutboundMode
         ) {
             self.removeFullTunnel = removeFullTunnel
             self.restoreLanDefault = restoreLanDefault
@@ -109,6 +128,11 @@ struct AppConfig: Codable, Equatable {
             self.connectBackend = connectBackend
             self.systemVPNName = systemVPNName
             self.openvpnConfigPath = openvpnConfigPath
+            self.kerioInterface = kerioInterface
+            self.kerioGateway = kerioGateway
+            self.ignoreInterfaces = ignoreInterfaces
+            self.routeGuardEnabled = routeGuardEnabled
+            self.outboundMode = outboundMode
         }
 
         init(from decoder: Decoder) throws {
@@ -126,6 +150,11 @@ struct AppConfig: Codable, Equatable {
             connectBackend = try c.decodeIfPresent(ConnectBackend.self, forKey: .connectBackend) ?? .kerioClient
             systemVPNName = try c.decodeIfPresent(String.self, forKey: .systemVPNName) ?? ""
             openvpnConfigPath = try c.decodeIfPresent(String.self, forKey: .openvpnConfigPath) ?? ""
+            kerioInterface = try c.decodeIfPresent(String.self, forKey: .kerioInterface) ?? ""
+            kerioGateway = try c.decodeIfPresent(String.self, forKey: .kerioGateway) ?? ""
+            ignoreInterfaces = try c.decodeIfPresent([String].self, forKey: .ignoreInterfaces) ?? []
+            routeGuardEnabled = try c.decodeIfPresent(Bool.self, forKey: .routeGuardEnabled) ?? true
+            outboundMode = try c.decodeIfPresent(OutboundMode.self, forKey: .outboundMode) ?? .external
         }
     }
 
@@ -185,6 +214,9 @@ struct AppConfig: Codable, Equatable {
         vpnRoutes = Self.normalizeList(vpnRoutes)
         bypassRoutes = Self.normalizeList(bypassRoutes)
         options.customDns = Self.normalizeList(options.customDns)
+        options.ignoreInterfaces = Self.normalizeList(options.ignoreInterfaces)
+        options.kerioInterface = options.kerioInterface.trimmingCharacters(in: .whitespacesAndNewlines)
+        options.kerioGateway = options.kerioGateway.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func normalizeList(_ items: [String]) -> [String] {

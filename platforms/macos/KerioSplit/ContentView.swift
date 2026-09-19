@@ -16,7 +16,7 @@ struct ContentView: View {
                 .id(section)
         }
         .navigationSplitViewStyle(.balanced)
-        .frame(minWidth: 780, minHeight: 560)
+        .frame(minWidth: 720, minHeight: 520)
         .alert("Disconnect All?", isPresented: $controller.showDisconnectConfirm) {
             Button("Cancel", role: .cancel) {}
             Button("Disconnect All", role: .destructive) { controller.confirmDisconnect() }
@@ -101,12 +101,14 @@ struct ContentView: View {
                 onAdd: { controller.addBypassRoute() },
                 onRemove: { controller.removeBypassRoute($0) }
             )
+        case .outbound:
+            OutboundDashboard(controller: controller)
         case .settings:
             settingsPage
         case .json:
             jsonPage
         case .activity:
-            activityPage
+            ActivityDashboard(controller: controller)
         }
     }
 
@@ -394,6 +396,15 @@ struct ContentView: View {
                         )
                         Divider()
                         SettingsToggle(
+                            title: "Route guard",
+                            subtitle: "While split is ON, re-assert Kerio CIDRs if another VPN steals them.",
+                            isOn: Binding(
+                                get: { controller.config.options.routeGuardEnabled },
+                                set: { controller.config.options.routeGuardEnabled = $0; controller.saveConfig() }
+                            )
+                        )
+                        Divider()
+                        SettingsToggle(
                             title: "Auto-apply on launch",
                             subtitle: "Run Connect All when the app opens (helper required).",
                             isOn: Binding(
@@ -449,6 +460,34 @@ struct ContentView: View {
                                 set: { controller.config.options.notifyOnChange = $0; controller.saveConfig() }
                             )
                         )
+                    }
+                }
+
+                SurfaceCard {
+                    VStack(alignment: .leading, spacing: 10) {
+                        SectionLabel(
+                            title: "Kerio tunnel pin",
+                            subtitle: "Stops V2Box/Clash utuns from being mistaken for Kerio. Leave blank to auto-learn on apply."
+                        )
+                        TextField("Interface (e.g. utun3)", text: Binding(
+                            get: { controller.config.options.kerioInterface },
+                            set: { controller.config.options.kerioInterface = $0; controller.saveConfig(quiet: true) }
+                        ))
+                        .textFieldStyle(.roundedBorder)
+                        TextField("Gateway (e.g. 10.8.0.1)", text: Binding(
+                            get: { controller.config.options.kerioGateway },
+                            set: { controller.config.options.kerioGateway = $0; controller.saveConfig(quiet: true) }
+                        ))
+                        .textFieldStyle(.roundedBorder)
+                        if !controller.networkSnapshot.kerioInterface.isEmpty {
+                            Text("Detected now: \(controller.networkSnapshot.kerioInterface) · gw \(controller.networkSnapshot.kerioGateway)")
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(Brand.muted)
+                            Button("Pin detected tunnel") {
+                                controller.pinDetectedKerioTunnel()
+                            }
+                            .buttonStyle(.bordered)
+                        }
                     }
                 }
 
@@ -547,32 +586,4 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Activity
-
-    private var activityPage: some View {
-        PageSplit {
-            SurfaceCard {
-                HStack(alignment: .top, spacing: 12) {
-                    SectionLabel(title: "Activity log", subtitle: "Engine output and helper messages.")
-                    Spacer(minLength: 8)
-                    Button("Clear") { controller.clearLog() }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .disabled(controller.log.isEmpty)
-                }
-            }
-        } bottom: {
-            SurfaceCard(padding: 12) {
-                ScrollView {
-                    Text(controller.log.isEmpty ? "No activity yet." : controller.log)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(Brand.ink.opacity(0.85))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .textSelection(.enabled)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-    }
 }

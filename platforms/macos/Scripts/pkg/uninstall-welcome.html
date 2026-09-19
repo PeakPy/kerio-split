@@ -7,13 +7,26 @@
   h1 { font-size: 18px; margin: 0 0 10px; }
   p { font-size: 13px; margin: 0 0 8px; }
   ul { font-size: 13px; margin: 8px 0 0 18px; padding: 0; }
+  .note {
+    margin: 12px 0;
+    padding: 10px 12px;
+    background: #FEF3C7;
+    border: 1px solid #F59E0B;
+    border-radius: 8px;
+    font-size: 13px;
+  }
+  .note b { color: #92400E; }
 </style>
 </head>
 <body>
   <h1>Uninstall Kerio Split</h1>
-  <p>This removes Kerio Split from this Mac.</p>
+  <p>This package <b>removes</b> Kerio Split from this Mac. It does not install the app.</p>
+  <div class="note">
+    <b>About the Install button:</b> macOS Installer always labels the final button “Install”, even for uninstall packages. Clicking it will <b>uninstall</b> Kerio Split — it will not put the app back.
+  </div>
+  <p>What gets removed:</p>
   <ul>
-    <li>App in Applications</li>
+    <li>Kerio Split.app in Applications</li>
     <li>Route helper and sudoers entry</li>
     <li>Kerio Split settings under Application Support</li>
   </ul>

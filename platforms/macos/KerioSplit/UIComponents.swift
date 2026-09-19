@@ -3,14 +3,17 @@ import SwiftUI
 // MARK: - Layout primitives
 
 struct PageScroll<Content: View>: View {
+    /// Soft cap so ultra-wide windows stay readable; below this, content fills the pane.
+    var maxContentWidth: CGFloat = 1180
     @ViewBuilder var content: () -> Content
 
     var body: some View {
         ScrollView {
             content()
-                .padding(22)
-                .frame(maxWidth: 860, alignment: .topLeading)
-                .frame(maxWidth: .infinity, alignment: .top)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 20)
+                .frame(maxWidth: maxContentWidth, alignment: .topLeading)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         // Critical on macOS NavigationSplitView: without this, detail can collapse to empty.
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
