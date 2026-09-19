@@ -75,10 +75,14 @@ jobs:
             | **KerioSplit.pkg** | macOS install |
             | **KerioSplit-Uninstall.pkg** | macOS remove |
             | **KerioSplit.dmg** | macOS both packages |
-            | **keriosplit-*-linux.tar.gz** | Linux CLI (`ip route`) |
-            | **keriosplit-*-windows.zip** | Windows CLI preview (stub engine) |
+            | **keriosplit-*-linux.tar.gz** | Linux CLI (`ip route`) — early preview |
+            | **keriosplit-*-windows.zip** | Windows CLI — early preview (stub engine) |
 
-            macOS: unsigned — right-click → **Open**. Apple Silicon.
+            macOS: unsigned — right-click → **Open**. Apple Silicon. Best-tested platform.
+
+            ### Please help test Linux & Windows
+
+            Linux and Windows builds are **not tested enough** yet (CI = dry-run + Linux Docker smoke only — not a real Kerio VPN). If you try them, please [open an issue](https://github.com/PeakPy/kerio-split/issues/new/choose) with OS version, what you ran, and what worked or broke. Feedback is required to mature these ports.
 
             Linux: Python 3.9+ and `iproute2`; `sudo` for apply/restore.
 

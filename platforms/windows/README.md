@@ -2,6 +2,8 @@
 
 Route engine stub — not implemented yet. Shared CLI and dry-run work today.
 
+**Early preview.** This port has **not** been tested enough on real Windows + Kerio setups. Please try the archive (even dry-run) and [send feedback](https://github.com/PeakPy/kerio-split/issues/new/choose) — OS build, Python version, and any errors.
+
 ## Release archive
 
 From [Releases](https://github.com/PeakPy/kerio-split/releases) download `keriosplit-*-windows.zip`, or build:

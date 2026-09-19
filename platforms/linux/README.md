@@ -2,6 +2,8 @@
 
 CLI route engine for Kerio Split (`ip route`).
 
+**Early preview.** Automated Docker smoke exists; real Kerio + production hosts are **not** covered enough yet. Please run it and [report results](https://github.com/PeakPy/kerio-split/issues/new/choose) (distro, kernel, Kerio client version, apply/restore outcome).
+
 ## Release archive
 
 From [Releases](https://github.com/PeakPy/kerio-split/releases) download `keriosplit-*-linux.tar.gz`, or build:

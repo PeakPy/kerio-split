@@ -21,6 +21,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Notes
 
+- **Linux and Windows are early previews** — not enough real-world testing yet. Please try them and [send feedback via Issues](https://github.com/PeakPy/kerio-split/issues/new/choose).
 - Windows archive ships a stub engine (dry-run works; real routes need WinAPI next)
 - macOS remains the full GUI companion
 

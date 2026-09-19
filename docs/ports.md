@@ -29,6 +29,8 @@ make test-core
 make test-linux-docker
 ```
 
+These checks are **not** enough for production confidence. Real Kerio on Linux/Windows still needs volunteers — please [file feedback](https://github.com/PeakPy/kerio-split/issues/new?template=port_feedback.md) after you try a preview build.
+
 ## Architecture reminder
 
 ```text

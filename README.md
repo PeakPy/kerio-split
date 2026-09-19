@@ -19,9 +19,11 @@ Download from [Releases](https://github.com/PeakPy/kerio-split/releases).
 
 | Artifact | Platform |
 | --- | --- |
-| `KerioSplit.pkg` / `.dmg` | **macOS** app (Apple Silicon) |
-| `keriosplit-*-linux.tar.gz` | **Linux** CLI (`ip route`) |
-| `keriosplit-*-windows.zip` | **Windows** CLI preview (engine stub) |
+| `KerioSplit.pkg` / `.dmg` | **macOS** app (Apple Silicon) — primary, best-tested |
+| `keriosplit-*-linux.tar.gz` | **Linux** CLI (`ip route`) — early preview |
+| `keriosplit-*-windows.zip` | **Windows** CLI — early preview (engine stub) |
+
+> **Linux & Windows are early previews.** They have not been tested enough in real Kerio setups yet (CI covers dry-run + a Linux Docker route smoke only). Please try them on your machine and **[open an issue with feedback](https://github.com/PeakPy/kerio-split/issues/new/choose)** — what worked, what broke, OS/distro, and steps. That feedback is how these ports become trustworthy.
 
 ### macOS
 
@@ -40,7 +42,9 @@ Unsigned builds: right-click → **Open**.
 Config: `~/Library/Application Support/KerioSplit/Config/config.json`  
 Example: [`config/config.example.json`](config/config.example.json)
 
-### Linux
+### Linux (early preview — please test & report)
+
+Not production-ready yet. Docker smoke ≠ real Kerio. If you run it, tell us what happened.
 
 ```bash
 make release-linux
@@ -52,13 +56,15 @@ tar -tzf dist/keriosplit-*-linux.tar.gz | head
 
 See [platforms/linux/README.md](platforms/linux/README.md). Smoke without Kerio: `make test-linux-docker`.
 
-### Windows (preview)
+### Windows (early preview — please test & report)
+
+Engine is a stub; shared CLI/dry-run only for now. Still useful to validate packaging — please file issues with your results.
 
 ```bash
 make release-windows
 ```
 
-Engine is a stub — use `--platform dry-run` or wait for WinAPI. See [platforms/windows/README.md](platforms/windows/README.md).
+See [platforms/windows/README.md](platforms/windows/README.md).
 
 ## Shared CLI (any OS)
 
