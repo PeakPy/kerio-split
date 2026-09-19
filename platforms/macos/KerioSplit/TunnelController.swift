@@ -1780,24 +1780,34 @@ final class TunnelController: ObservableObject {
         try? outboundManager.saveStore(outboundStore)
         // Ensure helper scripts (outbound-start) are current before connect
         syncScriptsToSupport()
-        // Refresh once so we bind outbound dials to the real LAN, not Kerio.
+        // Bind ONLY to physical LAN (en0/…) — never dial the share-link VPN through Kerio.
         probeNetwork()
-        // Give the probe a beat, then read snapshot (probe is async).
         try? await Task.sleep(nanoseconds: 150_000_000)
         let snap = networkSnapshot
-        let bindIface = snap.lanInterface.isEmpty ? snap.defaultInterface : snap.lanInterface
+        let bindIface: String = {
+            if snap.lanInterface.hasPrefix("en") { return snap.lanInterface }
+            if snap.defaultInterface.hasPrefix("en") { return snap.defaultInterface }
+            return ""
+        }()
         var exclude: [String] = []
-        if !snap.kerioInterface.isEmpty { exclude.append(snap.kerioInterface) }
+        // Exclude real Kerio utun only (never our 172.19 outbound TUN).
+        if !snap.kerioInterface.isEmpty,
+           !snap.kerioTunnelAddress.hasPrefix("172.19.0."),
+           snap.kerioInterface != snap.outboundInterface {
+            exclude.append(snap.kerioInterface)
+        }
 
-        // Kerio full-tunnel hijack makes internet crawl — apply split first when possible.
-        if helperReady, !isActive, snap.hasKerioTunnel || snap.fullTunnelHijack {
+        // If Kerio full-tunnel is eating the default route, peel it back first so
+        // outbound can dial on LAN. Outbound itself never rides inside Kerio.
+        if helperReady, !isActive, snap.fullTunnelHijack {
             await ensureSplitAppliedForOutbound()
         }
 
         let ok = await outboundManager.connect(
             profile: profile,
             bindInterface: bindIface,
-            excludeInterfaces: exclude
+            excludeInterfaces: exclude,
+            kerioCIDRs: config.vpnRoutes
         )
         outboundConnected = outboundManager.isConnected
         outboundStatusDetail = outboundManager.statusDetail
@@ -1806,8 +1816,9 @@ final class TunnelController: ObservableObject {
         outboundConnectedAt = outboundManager.connectedAt
         outboundActiveName = outboundManager.activeProfileName
         if ok {
-            recordEvent("Outbound connected — \(profile.name)")
-            pinStatus("Connected — \(profile.name)", seconds: 6)
+            let via = bindIface.isEmpty ? "auto" : bindIface
+            recordEvent("Outbound connected — \(profile.name) (dial via \(via), separate from Kerio)")
+            pinStatus("Connected via \(via) — not through Kerio", seconds: 6)
             probeNetwork()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                 self?.autoIgnoreSecondaryTuns()

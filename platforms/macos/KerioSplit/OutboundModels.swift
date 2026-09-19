@@ -20,7 +20,7 @@ enum OutboundMode: String, Codable, CaseIterable, Identifiable {
         case .off:
             return "Only Kerio split — no second VPN."
         case .builtIn:
-            return "Connect a vless / vmess / trojan profile inside Kerio Split."
+            return "Second VPN on LAN only — never through Kerio. Kerio stays on private CIDRs."
         case .external:
             return "Use V2Box, Clash, Karing… We guard Kerio routes around it."
         }

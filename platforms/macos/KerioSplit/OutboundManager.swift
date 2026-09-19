@@ -154,7 +154,8 @@ final class OutboundManager: ObservableObject {
     func connect(
         profile: OutboundProfile,
         bindInterface: String = "",
-        excludeInterfaces: [String] = []
+        excludeInterfaces: [String] = [],
+        kerioCIDRs: [String] = []
     ) async -> Bool {
         refreshBinary()
         guard let bin = binaryPath else {
@@ -168,7 +169,8 @@ final class OutboundManager: ObservableObject {
             let json = try SingBoxConfigBuilder.makeConfig(
                 shareLink: profile.shareLink,
                 bindInterface: bindInterface,
-                excludeInterfaces: excludeInterfaces
+                excludeInterfaces: excludeInterfaces,
+                kerioCIDRs: kerioCIDRs
             )
             try json.write(to: configURL, atomically: true, encoding: .utf8)
             await stopAll()
@@ -404,16 +406,18 @@ final class OutboundManager: ObservableObject {
 }
 
 enum SingBoxConfigBuilder {
-    /// Match fast clients (Karing): FakeIP, WS early-data, TFO, mux on plain WS.
+    /// Dual-VPN safe: dial VLESS on LAN only (never via Kerio). Kerio private CIDRs stay on Kerio.
     static func makeConfig(
         shareLink: String,
         bindInterface: String = "",
-        excludeInterfaces: [String] = []
+        excludeInterfaces: [String] = [],
+        kerioCIDRs: [String] = []
     ) throws -> String {
         var outbound = try outboundObject(from: shareLink)
-        let lan = bindInterface.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lan = Self.physicalLAN(bindInterface)
         outbound["tcp_fast_open"] = true
         outbound["udp_fragment"] = true
+        // CRITICAL: proxy dial must leave via Wi-Fi/Ethernet — never Kerio utun.
         if !lan.isEmpty {
             outbound["bind_interface"] = lan
         }
@@ -424,22 +428,41 @@ enum SingBoxConfigBuilder {
             "address": ["172.19.0.1/30"],
             "mtu": 9000,
             "auto_route": true,
-            "strict_route": true,
+            // Keep false when Kerio may be present so we don't steal corporate routes.
+            "strict_route": false,
             "stack": "mixed"
         ]
         let excludes = excludeInterfaces
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty && $0 != lan }
+            .filter { !$0.isEmpty && $0 != lan && !$0.hasPrefix("en") }
         if !excludes.isEmpty {
             tunInbound["exclude_interface"] = excludes
-            tunInbound["strict_route"] = false
+        }
+        // Never let sing-box auto_route claim Kerio corporate CIDRs.
+        let excludeAddrs = kerioCIDRs
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        if !excludeAddrs.isEmpty {
+            tunInbound["route_exclude_address"] = excludeAddrs
         }
 
+        // Order matters: FakeIP (198.18/15) is "private-looking" but MUST go to proxy.
+        // Real LAN / Kerio RFC1918 stays on system table (Kerio utun wins for corporate).
         var route: [String: Any] = [
             "rules": [
                 ["action": "sniff", "timeout": "50ms"],
                 ["protocol": "dns", "action": "hijack-dns"],
-                ["ip_is_private": true, "outbound": "direct"]
+                ["ip_cidr": ["198.18.0.0/15"], "outbound": "proxy"],
+                [
+                    "ip_cidr": [
+                        "10.0.0.0/8",
+                        "172.16.0.0/12",
+                        "192.168.0.0/16",
+                        "127.0.0.0/8",
+                        "169.254.0.0/16"
+                    ],
+                    "outbound": "direct"
+                ]
             ],
             "final": "proxy"
         ]
@@ -459,6 +482,7 @@ enum SingBoxConfigBuilder {
                     ["tag": "fakeip", "address": "fakeip"]
                 ],
                 "rules": [
+                    // Resolve proxy server hostname on LAN DNS — not through Kerio/proxy loop.
                     ["outbound": "any", "server": "local"],
                     ["query_type": ["A", "AAAA"], "server": "fakeip"]
                 ],
@@ -473,7 +497,10 @@ enum SingBoxConfigBuilder {
             "inbounds": [tunInbound],
             "outbounds": [
                 outbound,
-                ["type": "direct", "tag": "direct"],
+                // direct also binds LAN so "private → direct" never exits via Kerio by mistake
+                lan.isEmpty
+                    ? ["type": "direct", "tag": "direct"]
+                    : ["type": "direct", "tag": "direct", "bind_interface": lan],
                 ["type": "block", "tag": "block"]
             ],
             "route": route
@@ -483,6 +510,13 @@ enum SingBoxConfigBuilder {
             throw NSError(domain: "KerioSplit", code: 4, userInfo: [NSLocalizedDescriptionKey: "Failed to encode sing-box config"])
         }
         return text
+    }
+
+    /// Only physical Ethernet/Wi-Fi — never a utun (Kerio or outbound).
+    private static func physicalLAN(_ candidate: String) -> String {
+        let s = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.hasPrefix("en") { return s }
+        return ""
     }
 
     private static func outboundObject(from link: String) throws -> [String: Any] {

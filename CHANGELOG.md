@@ -5,6 +5,13 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.5] - 2026-09-19
+
+### Fixed
+
+- Built-in outbound no longer nests inside Kerio: dial binds to `en*` only; Kerio CIDRs excluded from TUN auto_route
+- FakeIP `198.18.0.0/15` was caught by private→direct and bypassed the proxy (looked Connected but traffic wrong)
+
 ## [1.2.4] - 2026-09-19
 
 ### Fixed
