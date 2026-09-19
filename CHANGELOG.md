@@ -5,6 +5,12 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.6] - 2026-09-19
+
+### Fixed
+
+- Outbound auto-disconnect right after Connect: root-owned sing-box pid looked "dead" (`kill` → EPERM), watchdog killed a healthy session
+
 ## [1.2.5] - 2026-09-19
 
 ### Fixed

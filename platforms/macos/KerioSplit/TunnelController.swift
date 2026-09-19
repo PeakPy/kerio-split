@@ -981,19 +981,22 @@ final class TunnelController: ObservableObject {
             autoApplyTriggered = false
         }
 
-        // Drop false "Outbound Connected" when engine died or TUN vanished.
-        if outboundConnected {
+        // Drop false "Outbound Connected" only when the engine is truly gone.
+        // Do NOT treat a missing TUN probe alone as death — and never mistake
+        // EPERM on a root-owned sing-box pid for "exited" (that auto-killed sessions).
+        if outboundConnected, !outboundConnecting {
             let alive = outboundManager.isEngineAlive()
             let hasTun = !snap.outboundInterface.isEmpty
-            if !alive || (!hasTun && Date().timeIntervalSince(outboundConnectedAt ?? .distantPast) > 3) {
+            let age = Date().timeIntervalSince(outboundConnectedAt ?? .distantPast)
+            if !alive, age > 6, !hasTun {
                 outboundManager.disconnect()
                 outboundConnected = false
                 outboundConnecting = false
                 outboundConnectedAt = nil
                 outboundActiveName = ""
                 outboundStatusDetail = "Disconnected — engine stopped"
-                outboundError = alive ? "Outbound TUN missing" : "Outbound engine exited"
-                recordEvent("Outbound marked down — \(outboundError ?? "engine gone")")
+                outboundError = "Outbound engine exited"
+                recordEvent("Outbound marked down — engine exited")
             }
         }
 

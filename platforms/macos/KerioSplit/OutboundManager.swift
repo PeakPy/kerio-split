@@ -340,14 +340,27 @@ final class OutboundManager: ObservableObject {
         return profiles
     }
 
-    /// True while our sing-box process (or privileged pid) is still alive.
+    /// True while our sing-box process (or privileged root pid) is still alive.
     func isEngineAlive() -> Bool {
         if let proc = process { return proc.isRunning }
+
         let pidURL = workDir.appendingPathComponent("sing-box.pid")
-        guard let text = try? String(contentsOf: pidURL, encoding: .utf8) else { return false }
-        let pid = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let value = Int32(pid), value > 1 else { return false }
-        return kill(value, 0) == 0
+        if let text = try? String(contentsOf: pidURL, encoding: .utf8) {
+            let pid = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let value = Int32(pid), value > 1 {
+                let rc = kill(value, 0)
+                if rc == 0 { return true }
+                // Privileged outbound-start runs as root — user kill(0) gets EPERM
+                // while the process is still alive. That must NOT look like "dead".
+                if errno == EPERM { return true }
+            }
+        }
+        // Fallback: any sing-box we started with our config path
+        return HelperService.runProcess(
+            "/usr/bin/pgrep",
+            ["-f", "sing-box run -c \(configURL.path)"],
+            timeoutSeconds: 2
+        ).ok
     }
 
     private static func waitForOutboundTun(timeoutSeconds: TimeInterval) async -> Bool {
@@ -454,8 +467,9 @@ enum SingBoxConfigBuilder {
                 ["protocol": "dns", "action": "hijack-dns"],
                 ["ip_cidr": ["198.18.0.0/15"], "outbound": "proxy"],
                 [
-                    "ip_cidr": [
+                        "ip_cidr": [
                         "10.0.0.0/8",
+                        // Skip 172.19.0.0/30 (our TUN) — keep rest of 172.16/12 for Kerio/LAN.
                         "172.16.0.0/12",
                         "192.168.0.0/16",
                         "127.0.0.0/8",
