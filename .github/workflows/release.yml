@@ -9,12 +9,52 @@ permissions:
   contents: write
 
 jobs:
+  cli-artifacts:
+    name: Linux + Windows CLI archives
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Package CLI archives
+        run: |
+          chmod +x scripts/package-cli.sh
+          ./scripts/package-cli.sh all
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-archives
+          path: |
+            dist/keriosplit-*-linux.tar.gz
+            dist/keriosplit-*-windows.zip
+
   macos-artifacts:
+    name: macOS pkg + DMG
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - name: Build release packages
-        run: make release
+        run: make release-macos
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-packages
+          path: |
+            dist/KerioSplit.pkg
+            dist/KerioSplit-Uninstall.pkg
+            dist/KerioSplit.dmg
+
+  publish:
+    name: Publish GitHub Release
+    needs: [cli-artifacts, macos-artifacts]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Flatten artifacts
+        run: |
+          mkdir -p dist
+          find artifacts -type f \( -name '*.pkg' -o -name '*.dmg' -o -name '*.tar.gz' -o -name '*.zip' \) \
+            -exec cp -v {} dist/ \;
+          ls -la dist/
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -22,6 +62,26 @@ jobs:
             dist/KerioSplit.pkg
             dist/KerioSplit-Uninstall.pkg
             dist/KerioSplit.dmg
+            dist/keriosplit-*-linux.tar.gz
+            dist/keriosplit-*-windows.zip
           generate_release_notes: true
+          body: |
+            ## Kerio Split ${{ github.ref_name }}
+
+            ### Downloads
+
+            | File | Platform |
+            | --- | --- |
+            | **KerioSplit.pkg** | macOS install |
+            | **KerioSplit-Uninstall.pkg** | macOS remove |
+            | **KerioSplit.dmg** | macOS both packages |
+            | **keriosplit-*-linux.tar.gz** | Linux CLI (`ip route`) |
+            | **keriosplit-*-windows.zip** | Windows CLI preview (stub engine) |
+
+            macOS: unsigned — right-click → **Open**. Apple Silicon.
+
+            Linux: Python 3.9+ and `iproute2`; `sudo` for apply/restore.
+
+            Windows: dry-run / stub until WinAPI engine ships.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

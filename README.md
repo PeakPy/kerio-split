@@ -2,7 +2,7 @@
 
 <img src="assets/branding/banner-hero.png" alt="Kerio Split" width="100%">
 
-Split tunneling for **Kerio Control VPN** on macOS.
+Split tunneling for **Kerio Control VPN**.
 
 Kerio’s client often pushes full-tunnel routes (`0/1` + `128.0/1`). Kerio Split strips that and applies only the routes you configure.
 
@@ -10,70 +10,78 @@ This project does **not** implement the Kerio VPN protocol. It starts the offici
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![macOS 13+](https://img.shields.io/badge/macOS-13%2B-black.svg)](platforms/macos)
+[![Linux CLI](https://img.shields.io/badge/Linux-CLI-green.svg)](platforms/linux)
+[![Windows](https://img.shields.io/badge/Windows-preview-lightgrey.svg)](platforms/windows)
 
 ## Install
 
-Download the latest **`.pkg`** from [Releases](https://github.com/PeakPy/kerio-split/releases), or build locally:
+Download from [Releases](https://github.com/PeakPy/kerio-split/releases).
+
+| Artifact | Platform |
+| --- | --- |
+| `KerioSplit.pkg` / `.dmg` | **macOS** app (Apple Silicon) |
+| `keriosplit-*-linux.tar.gz` | **Linux** CLI (`ip route`) |
+| `keriosplit-*-windows.zip` | **Windows** CLI preview (engine stub) |
+
+### macOS
 
 ```bash
-make release
+make release-macos
 open dist/KerioSplit.pkg
 ```
 
-| File | What it does |
-| --- | --- |
-| `KerioSplit.pkg` | Installs into `/Applications` |
-| `KerioSplit-Uninstall.pkg` | Removes the app, helper, sudoers, and support files |
-| `KerioSplit.dmg` | Both packages in one disk image |
-
-Unsigned builds: right-click the package → **Open**. Apple Silicon only for now.
-
-### First run
+Unsigned builds: right-click → **Open**.
 
 1. Open **Kerio Split**
 2. **Install route helper** (one admin password)
 3. **Connect All**
 4. Edit routes under VPN Routes / Bypass / Settings
 
-Config path: `~/Library/Application Support/KerioSplit/Config/config.json`  
+Config: `~/Library/Application Support/KerioSplit/Config/config.json`  
 Example: [`config/config.example.json`](config/config.example.json)
 
+### Linux
+
 ```bash
-sudo -n /usr/local/libexec/keriosplit-ctl apply
-sudo -n /usr/local/libexec/keriosplit-ctl restore
-sudo -n /usr/local/libexec/keriosplit-ctl status
+make release-linux
+tar -tzf dist/keriosplit-*-linux.tar.gz | head
+# on a Linux host:
+#   tar -xzf keriosplit-*-linux.tar.gz && cd keriosplit-*-linux
+#   sudo ./bin/keriosplit apply -v
 ```
 
-## What it does
+See [platforms/linux/README.md](platforms/linux/README.md). Smoke without Kerio: `make test-linux-docker`.
 
-- Menu bar: Connect All / Disconnect All / Open
-- Connect All starts Kerio (Accessibility click when allowed), waits for the tunnel, applies split
-- Disconnect All restores LAN routes, then disconnects Kerio
-- VPN + bypass routes, DNS options, import/export
-- Light / Dark / System appearance
-- Narrow passwordless helper after one install
+### Windows (preview)
 
-## Requirements
+```bash
+make release-windows
+```
 
-- macOS 13+ (arm64)
-- Kerio Control VPN Client, or L2TP/IPsec / OpenVPN set up by your admin
-- Xcode Command Line Tools to build from source
+Engine is a stub — use `--platform dry-run` or wait for WinAPI. See [platforms/windows/README.md](platforms/windows/README.md).
+
+## Shared CLI (any OS)
+
+```bash
+make test-core
+PYTHONPATH=core:platforms/linux:platforms/windows \
+  python3 -m keriosplit status --platform dry-run
+```
 
 ## Layout
 
 ```text
-platforms/macos/   SwiftUI app, helper scripts, pkg packaging
-platforms/linux/   reserved for a future port
-platforms/windows/ reserved for a future port
+core/              shared Python config + CLI + dry-run
+platforms/macos/   SwiftUI app, helper, pkg/DMG
+platforms/linux/   iproute2 adapter + Docker smoke
+platforms/windows/ WinAPI stub
 config/            shared config example
-docs/              architecture notes
-assets/branding/   icon and README artwork
-scripts/           branding sync used by the macOS build
+docs/              architecture + ports
 ```
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Security reports: [SECURITY.md](SECURITY.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md). Security: [SECURITY.md](SECURITY.md).
 
 ## License
 

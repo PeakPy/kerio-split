@@ -1,0 +1,10 @@
+services:
+  linux-smoke:
+    build:
+      context: ../..
+      dockerfile: platforms/linux/Dockerfile
+    cap_add:
+      - NET_ADMIN
+    privileged: true
+    volumes:
+      - ../..:/src:ro

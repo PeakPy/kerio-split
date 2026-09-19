@@ -13,16 +13,28 @@ Flow:
 
 | Path | Role |
 | --- | --- |
-| `config/` | Example JSON shared across ports |
-| `platforms/macos/` | Shipping SwiftUI app, helper, packaging |
-| `platforms/linux/` | Placeholder for a future port |
-| `platforms/windows/` | Placeholder for a future port |
+| `config/` | Shared JSON example |
+| `core/keriosplit/` | Shared Python CLI + config + dry-run engine |
+| `platforms/macos/` | Shipping SwiftUI app + helper |
+| `platforms/linux/` | `ip route` adapter + Docker smoke |
+| `platforms/windows/` | Stub (WinAPI later) |
 
-## macOS
+## Shared CLI
+
+```bash
+PYTHONPATH=core:platforms/linux:platforms/windows \
+  python3 -m keriosplit status --platform dry-run
+```
+
+Platforms: `dry-run` (CI), `linux`, `windows` (stub).
+
+See [ports.md](ports.md) for Docker / VM testing without owning those machines day-to-day.
+
+## macOS (shipping)
 
 ```text
 App (SwiftUI)
-  → HelperService (one-time helper install, then passwordless sudo)
+  → HelperService
   → keriosplit-ctl
   → split-tunnel.sh
 ```

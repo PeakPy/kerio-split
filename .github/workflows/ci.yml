@@ -43,4 +43,21 @@ jobs:
           test -n "$V"
           grep -F "<string>${V}</string>" platforms/macos/KerioSplit/Info.plist | wc -l | grep -q '^[ ]*2$'
           grep -F "?? \"${V}\"" platforms/macos/KerioSplit/TunnelController.swift
+          grep -F "__version__ = \"${V}\"" core/keriosplit/__init__.py
           echo "VERSION=$V OK"
+
+  core-tests:
+    name: Shared core (dry-run)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: unit tests
+        run: make test-core
+
+  linux-docker-smoke:
+    name: Linux route smoke (Docker)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: docker smoke
+        run: make test-linux-docker

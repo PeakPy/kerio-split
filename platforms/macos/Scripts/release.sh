@@ -100,7 +100,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 	<key>NSAccessibilityUsageDescription</key>
 	<string>Kerio Split clicks Connect or Disconnect in the official Kerio VPN Client menu extra, then applies or restores split. It does not implement the Kerio VPN protocol.</string>
 	<key>NSHumanReadableCopyright</key>
-	<string>Copyright © Ehsan Akbari</string>
+	<string>Copyright © 2026 Kerio Split contributors</string>
 </dict>
 </plist>
 PLIST
@@ -228,7 +228,6 @@ cp "$INSTALL_PKG" "$DMG_STAGE/Install Kerio Split.pkg"
 cp "$UNINSTALL_PKG" "$DMG_STAGE/Uninstall Kerio Split.pkg"
 cat > "$DMG_STAGE/README.txt" <<'TXT'
 Kerio Split
-by Ehsan Akbari
 
 Install
 1. Double-click "Install Kerio Split.pkg"

@@ -45,6 +45,8 @@ struct OverviewDashboard: View {
                     Spacer(minLength: 0)
                     phaseBadge
                 }
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
 
                 HStack(alignment: .center, spacing: 14) {
                     BrandLogo(size: 56, style: .badge)
@@ -95,17 +97,19 @@ struct OverviewDashboard: View {
                             .font(.system(size: 12, weight: .medium, design: .rounded))
                             .foregroundStyle(.white.opacity(0.92))
                             .fixedSize(horizontal: false, vertical: true)
-                        HStack(spacing: 8) {
+                        VStack(alignment: .leading, spacing: 8) {
                             Button("Open Accessibility") { controller.grantClickKerio() }
                                 .buttonStyle(.borderedProminent)
                                 .tint(.white)
                                 .foregroundStyle(Brand.deep)
-                            Button("Relaunch & continue") { controller.relaunchToContinueConnect() }
-                                .buttonStyle(.bordered)
-                                .tint(.white)
-                            Button("Cancel") { controller.cancelConnectAll() }
-                                .buttonStyle(.bordered)
-                                .tint(.white)
+                            HStack(spacing: 8) {
+                                Button("Relaunch & continue") { controller.relaunchToContinueConnect() }
+                                    .buttonStyle(.bordered)
+                                    .tint(.white)
+                                Button("Cancel") { controller.cancelConnectAll() }
+                                    .buttonStyle(.bordered)
+                                    .tint(.white)
+                            }
                         }
                         .controlSize(.small)
                     }
@@ -123,11 +127,17 @@ struct OverviewDashboard: View {
             }
             .padding(22)
         }
-        .frame(maxWidth: .infinity, minHeight: 228, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: heroMinHeight, alignment: .leading)
         .shadow(color: Brand.deep.opacity(0.24), radius: 18, y: 8)
         .animation(.spring(response: 0.42, dampingFraction: 0.86), value: controller.sessionPhase)
         .animation(.spring(response: 0.42, dampingFraction: 0.86), value: controller.isActive)
         .animation(.easeInOut(duration: 0.25), value: controller.statusText)
+    }
+
+    private var heroMinHeight: CGFloat {
+        if !controller.helperReady { return 280 }
+        if controller.waitingForAccessibility || controller.sessionPhase == .waitingForPermission { return 300 }
+        return 228
     }
 
     private var phaseBadge: some View {

@@ -76,7 +76,7 @@ fi
 
 TMP_SUDOERS="$(mktemp /tmp/keriosplit-sudoers.XXXXXX)"
 cat > "$TMP_SUDOERS" <<EOF
-# Kerio Split — Ehsan Akbari
+# Kerio Split — passwordless route helper
 # Narrow NOPASSWD: only this binary, only this user.
 # Filename has no '.' so sudo's includedir will actually read it.
 ${USER_NAME} ALL=(root) NOPASSWD: ${CTL}

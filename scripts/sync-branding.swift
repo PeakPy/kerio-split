@@ -262,7 +262,7 @@ saveImage(canvas(width: 1600, height: 900) {
             .font: NSFont.systemFont(ofSize: 28, weight: .medium),
             .foregroundColor: NSColor(calibratedWhite: 0.75, alpha: 1)
         ])
-    ("by Ehsan Akbari  ·  macOS · Linux · Windows" as NSString).draw(
+    ("macOS · Linux · Windows" as NSString).draw(
         at: NSPoint(x: 96, y: 400),
         withAttributes: [
             .font: NSFont.systemFont(ofSize: 22, weight: .regular),
@@ -283,7 +283,7 @@ saveImage(canvas(width: 1024, height: 1024) {
     ]
     let tw = title.size(withAttributes: titleAttrs).width
     title.draw(at: NSPoint(x: (1024-tw)/2, y: 220), withAttributes: titleAttrs)
-    let by = "by Ehsan Akbari" as NSString
+    let by = "Open-source companion" as NSString
     let byAttrs: [NSAttributedString.Key: Any] = [
         .font: NSFont.systemFont(ofSize: 24, weight: .medium),
         .foregroundColor: NSColor(calibratedWhite: 0.7, alpha: 1)
