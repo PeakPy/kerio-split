@@ -43,6 +43,14 @@ struct KerioSplitApp: App {
                 .keyboardShortcut("k", modifiers: [.command, .shift])
                 .disabled(!controller.canDisconnectAll)
                 Divider()
+                Button("Copy Flight Log") {
+                    controller.copyFlightLog()
+                }
+                .keyboardShortcut("l", modifiers: [.command, .shift])
+                Button("Reveal Flight Log") {
+                    controller.revealFlightLog()
+                }
+                Divider()
                 Button("Reveal Config") { controller.revealConfigInFinder() }
                 Button("Export Config…") { controller.exportConfig() }
                 Button("Import Config…") { controller.importConfig() }

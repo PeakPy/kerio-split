@@ -5,6 +5,42 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.9] - 2026-09-22
+
+### Fixed
+
+- Disconnect All no longer immediately Connect All again (auto-apply was re-entering while Kerio session still up)
+- Wait up to 20s for Kerio session Disconnected; suppress auto-apply 90s after Disconnect
+- Outbound `0/1` hijack no longer counted as Kerio tunnel (false “Kerio on” flicker)
+- Route guard no longer toggles busy UI every ~10s
+- Debounce Kerio-down detection (3 probes) to stop chip flicker
+- Recognize Kerio bundle id `com.kerio.VPN.ie.agent`
+
+## [1.2.8] - 2026-09-21
+
+### Fixed
+
+- Connect All no longer pretends success when Kerio daemon is up but Connect was never clicked (was endless waiting)
+- Retries Kerio Connect click every ~8s while waiting for the tunnel
+- Launches Kerio menu UI via bundle id when path discovery fails
+
+### Added
+
+- DIAG flight recorder: structured log of connect/click/network/busy flips; Activity → Copy flight log
+- Log file: `~/Library/Logs/KerioSplit/flight-recorder.log`
+
+## [1.2.7] - 2026-09-21
+
+### Fixed
+
+- Connect All one-shot: wait for Kerio tunnel IPv4 (not just session Connected), then retry apply up to 6 times — no second tap needed
+- Hero UX when Kerio is up but split is off: badge `NEEDS SPLIT`, button `Apply Split`, process timeline stays visible
+
+### Changed
+
+- Outbound aligned with Karing practices: FakeIP DNS without proxy-detoured residual DNS, Mux only when link sets `mux=1`, TUN MTU 1400 for dual-VPN throughput
+- Shell never treats outbound `172.19.0.x` as Kerio
+
 ## [1.2.6] - 2026-09-19
 
 ### Fixed
@@ -102,7 +138,16 @@ First public release.
 - Non-relocatable install; Connect All resumes after Accessibility is granted
 - Passwordless route helper (one-time install)
 
-[Unreleased]: https://github.com/PeakPy/kerio-split/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/PeakPy/kerio-split/compare/v1.2.9...HEAD
+[1.2.9]: https://github.com/PeakPy/kerio-split/releases/tag/v1.2.9
+[1.2.8]: https://github.com/PeakPy/kerio-split/releases/tag/v1.2.8
+[1.2.7]: https://github.com/PeakPy/kerio-split/releases/tag/v1.2.7
+[1.2.6]: https://github.com/PeakPy/kerio-split/releases/tag/v1.2.6
+[1.2.5]: https://github.com/PeakPy/kerio-split/releases/tag/v1.2.5
+[1.2.4]: https://github.com/PeakPy/kerio-split/releases/tag/v1.2.4
+[1.2.3]: https://github.com/PeakPy/kerio-split/releases/tag/v1.2.3
+[1.2.2]: https://github.com/PeakPy/kerio-split/releases/tag/v1.2.2
+[1.2.1]: https://github.com/PeakPy/kerio-split/releases/tag/v1.2.1
 [1.2.0]: https://github.com/PeakPy/kerio-split/releases/tag/v1.2.0
 [1.1.0]: https://github.com/PeakPy/kerio-split/releases/tag/v1.1.0
 [1.0.0]: https://github.com/PeakPy/kerio-split/releases/tag/v1.0.0

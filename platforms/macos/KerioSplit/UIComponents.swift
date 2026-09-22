@@ -503,6 +503,8 @@ struct DualActionBar: View {
     let connecting: Bool
     let disconnecting: Bool
     var style: Style = .hero
+    /// When Kerio is already up, show "Apply Split" so users know one more action is required.
+    var connectTitle: String = "Connect All"
     let onConnect: () -> Void
     let onDisconnect: () -> Void
 
@@ -510,7 +512,7 @@ struct DualActionBar: View {
         HStack(spacing: 10) {
             Button(action: onConnect) {
                 label(
-                    title: connecting ? "Connecting…" : "Connect All",
+                    title: connecting ? "Connecting…" : connectTitle,
                     icon: connecting ? "hourglass" : "bolt.fill",
                     kind: .connect
                 )
@@ -534,6 +536,7 @@ struct DualActionBar: View {
         .animation(.spring(response: 0.38, dampingFraction: 0.84), value: disconnecting)
         .animation(.spring(response: 0.38, dampingFraction: 0.84), value: connectEnabled)
         .animation(.spring(response: 0.38, dampingFraction: 0.84), value: disconnectEnabled)
+        .animation(.spring(response: 0.38, dampingFraction: 0.84), value: connectTitle)
     }
 
     private enum Kind { case connect, disconnect }

@@ -176,6 +176,7 @@ struct OverviewDashboard: View {
                     connecting: controller.sessionPhase == .connecting || controller.sessionPhase == .waitingForPermission,
                     disconnecting: controller.sessionPhase == .disconnecting,
                     style: .hero,
+                    connectTitle: heroConnectTitle,
                     onConnect: { controller.connectAll() },
                     onDisconnect: { controller.requestDisconnect() }
                 )
@@ -206,12 +207,23 @@ struct OverviewDashboard: View {
 
     private var phaseTitle: String {
         switch controller.sessionPhase {
-        case .idle: return "IDLE"
+        case .idle:
+            if !controller.isActive && (controller.kerioSessionConnected || controller.kerioTunnelSeen) {
+                return "NEEDS SPLIT"
+            }
+            return "IDLE"
         case .connecting: return "CONNECTING"
         case .waitingForPermission: return "NEEDS ACCESS"
-        case .connected: return "ALL ON"
+        case .connected: return controller.isActive ? "ALL ON" : "KERIO ONLY"
         case .disconnecting: return "DISCONNECTING"
         }
+    }
+
+    private var heroConnectTitle: String {
+        if controller.kerioSessionConnected || controller.kerioTunnelSeen {
+            return "Apply Split"
+        }
+        return "Connect All"
     }
 
     private func statusChip(title: String, lit: Bool) -> some View {
@@ -271,7 +283,8 @@ struct OverviewDashboard: View {
                 }
 
                 if controller.sessionPhase == .connecting || controller.sessionPhase == .waitingForPermission
-                    || controller.sessionPhase == .disconnecting {
+                    || controller.sessionPhase == .disconnecting
+                    || (!controller.isActive && (controller.kerioSessionConnected || controller.kerioTunnelSeen)) {
                     ProcessTimeline(steps: controller.processSteps, phase: controller.sessionPhase)
                         .animation(.spring(response: 0.44, dampingFraction: 0.86), value: controller.processSteps)
                 }
@@ -399,7 +412,7 @@ struct OverviewDashboard: View {
             if controller.isActive {
                 return "Session Connected (\(label)) · split ON"
             }
-            return "Session Connected (\(label)) · tap Connect All to apply split"
+            return "Session Connected (\(label)) · tap Apply Split once — Kerio alone is not enough"
         }
         if controller.isActive {
             if controller.networkSnapshot.hasExternalOutbound {

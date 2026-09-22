@@ -210,19 +210,22 @@ enum ScenarioEngine {
             )
         }
 
-        // Tunnel / session up but split off
+        // Tunnel / session up but split off — one more tap finishes the job.
         let sessionNote = snapshot.kerioSessionConnected
             ? "Kerio session Connected\(snapshot.kerioSessionLabel.isEmpty ? "" : " (\(snapshot.kerioSessionLabel))"). "
             : ""
+        let ifaceReady = snapshot.readyForSplitApply
         return ScenarioPresentation(
             scenario: .idleReady,
-            title: "Kerio up — apply split",
+            title: ifaceReady ? "One tap left — apply split" : "Kerio connecting — waiting for tunnel IP",
             detail: snapshot.fullTunnelHijack
-                ? "\(sessionNote)Kerio is full-tunnel right now. Connect All restores LAN for everything except your VPN routes."
-                : "\(sessionNote)Tunnel \(snapshot.kerioInterface.isEmpty ? "detected" : snapshot.kerioInterface). Apply split to pin only your configured CIDRs.",
-            tone: .info,
+                ? "\(sessionNote)Kerio is full-tunnel right now. Apply Split restores LAN for everything except your VPN routes."
+                : ifaceReady
+                    ? "\(sessionNote)Tunnel \(snapshot.kerioInterface) is ready. Kerio alone is not enough — Apply Split pins only your corporate CIDRs."
+                    : "\(sessionNote)Session is up but the tunnel address is not ready yet. Wait a moment, then tap Apply Split once.",
+            tone: .warn,
             actions: [
-                .init(id: "connect", title: "Connect All", kind: .connectAll),
+                .init(id: "connect", title: "Apply Split", kind: .connectAll),
                 .init(id: "out", title: "Outbound", kind: .openOutbound)
             ]
         )

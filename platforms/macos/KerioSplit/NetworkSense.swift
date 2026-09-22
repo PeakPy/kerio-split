@@ -35,9 +35,20 @@ struct NetworkSnapshot: Equatable {
         // Live Kerio evidence only — never treat sing-box 172.19.0.1 as Kerio,
         // and never count managed routes alone (they can land on the wrong utun).
         if kerioTunnelAddress.hasPrefix("172.19.0.") { return false }
+        if !outboundInterface.isEmpty, kerioInterface == outboundInterface { return false }
         if kerioSessionConnected { return true }
-        if fullTunnelHijack { return true }
-        return !kerioInterface.isEmpty
+        // Outbound TUN also installs 0/1 hijack — do NOT treat hijack alone as Kerio.
+        if !kerioInterface.isEmpty, kerioInterface != outboundInterface {
+            return true
+        }
+        return false
+    }
+
+    /// Apply needs a real Kerio utun with IPv4 — session Connected alone is not enough.
+    var readyForSplitApply: Bool {
+        if kerioTunnelAddress.hasPrefix("172.19.0.") { return false }
+        if !outboundInterface.isEmpty, kerioInterface == outboundInterface { return false }
+        return !kerioInterface.isEmpty && !kerioTunnelAddress.isEmpty && kerioSessionConnected
     }
 
     var hasExternalOutbound: Bool {
@@ -203,10 +214,11 @@ enum NetworkSense {
             snap.tunnelEvidence.append("pin: \(pinIf)")
         }
 
-        // 3) Full-tunnel hijack iface
+        // 3) Full-tunnel hijack iface — only if it is NOT the outbound TUN
         if snap.kerioInterface.isEmpty,
            let fromHijack = interfaceForPrefix("0/1", routes: routes),
-           !kerioIgnore.contains(fromHijack) {
+           !kerioIgnore.contains(fromHijack),
+           !outboundIfaces.contains(fromHijack) {
             snap.kerioInterface = fromHijack
             snap.tunnelEvidence.append("hijack 0/1 on \(fromHijack)")
         }

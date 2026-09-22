@@ -7,11 +7,17 @@ import Foundation
 enum KerioLauncher {
     private static let agentBundleID = "com.kerio.VPN.fr.agent"
     private static let statusBundleID = "com.kerio.VPN.fr.status"
+    /// Some installs register as .ie.agent (locale) instead of .fr.agent.
+    private static let agentBundleIDAlt = "com.kerio.VPN.ie.agent"
+    private static let statusBundleIDAlt = "com.kerio.VPN.ie.status"
 
     private static let bundleIDs = [
         agentBundleID,
         statusBundleID,
-        "com.kerio.VPN.fr.prefpanel"
+        agentBundleIDAlt,
+        statusBundleIDAlt,
+        "com.kerio.VPN.fr.prefpanel",
+        "com.kerio.VPN.ie.prefpanel"
     ]
 
     private static let agentPaths = [
@@ -68,41 +74,62 @@ enum KerioLauncher {
     /// Background-only: open the official agent/menu extra, try to click Connect, then return.
     /// Does not speak Kerio TCP/UDP, does not dump credentials, does not call `scutil --nc start`.
     static func startOfficialSession(preferredServer: String) -> BringUpResult {
-        let targets = launchTargets()
-        guard !targets.isEmpty else {
-            if isServiceRunning {
-                return BringUpResult(
-                    ok: true,
-                    needsAccessibility: false,
-                    message: "Kerio service is running. Kerio Split cannot log in; click Connect in Kerio."
-                )
-            }
-            return BringUpResult(
-                ok: false,
-                needsAccessibility: false,
-                message: "Kerio VPN Client not found — install Kerio Control VPN Client first"
-            )
+        FlightRecorder.log("kerio", "bring_up_begin", [
+            "preferredServer": preferredServer.isEmpty ? "(none)" : preferredServer,
+            "axTrusted": AXIsProcessTrusted() ? "1" : "0",
+            "serviceRunning": isServiceRunning ? "1" : "0",
+            "uiRunning": kerioUIRunning ? "1" : "0",
+            "bundlePath": runningAppPath
+        ])
+
+        var targets = launchTargets()
+        if targets.isEmpty {
+            // Last resort: ask Launch Services / open by bundle id (daemon alone is not enough).
+            _ = forceLaunchByBundleID()
+            waitForKerioUI(timeout: 2.0)
+            targets = launchTargets()
+        }
+
+        guard !targets.isEmpty || kerioUIRunning || isServiceRunning else {
+            let msg = "Kerio VPN Client not found — install Kerio Control VPN Client first"
+            FlightRecorder.log("kerio", "bring_up_fail", ["reason": "not_installed", "msg": msg])
+            return BringUpResult(ok: false, needsAccessibility: false, message: msg)
         }
 
         let alreadyUp = kerioUIRunning
         if !alreadyUp {
-            for url in targets {
-                launch(url, activates: false, wait: 0)
+            if targets.isEmpty {
+                _ = forceLaunchByBundleID()
+            } else {
+                for url in targets {
+                    FlightRecorder.log("kerio", "launch_app", ["path": url.path, "name": url.lastPathComponent])
+                    launch(url, activates: false, wait: 0)
+                }
             }
-            waitForKerioUI(timeout: 1.4)
+            waitForKerioUI(timeout: 4.0)
+            FlightRecorder.log("kerio", "wait_ui_done", ["uiRunning": kerioUIRunning ? "1" : "0"])
         }
 
         if !AXIsProcessTrusted() {
             promptAccessibilityIfNeeded()
-            return BringUpResult(
-                ok: false,
-                needsAccessibility: true,
-                message: "Enable Kerio Split in System Settings → Privacy & Security → Accessibility. Connect All will continue automatically."
-            )
+            let msg = "Enable Kerio Split in System Settings → Privacy & Security → Accessibility. Connect All will continue automatically."
+            FlightRecorder.log("kerio", "bring_up_blocked", ["reason": "ax_off"])
+            return BringUpResult(ok: false, needsAccessibility: true, message: msg)
         }
 
+        // Always attempt click — even when only the daemon is up (menu extra may already be present).
         let click = clickOfficialMenu(preferredServer: preferredServer, wantDisconnect: false)
-        let opened = targets.map(\.lastPathComponent).joined(separator: ", ")
+        let opened = targets.isEmpty
+            ? (kerioUIRunning ? "menu-extra-already-running" : "daemon-only")
+            : targets.map(\.lastPathComponent).joined(separator: ", ")
+
+        FlightRecorder.log("kerio", "click_result", [
+            "kind": String(describing: click.kind),
+            "detail": click.detail,
+            "opened": opened,
+            "menuDump": click.menuDump
+        ])
+
         switch click.kind {
         case .clicked:
             return BringUpResult(
@@ -123,12 +150,72 @@ enum KerioLauncher {
                 message: "Enable Kerio Split in Accessibility (this app copy). Connect All will continue automatically when permission is on."
             )
         case .noControl:
+            // Do NOT pretend success when we never clicked — that caused endless "waiting for tunnel".
+            let dump = click.menuDump.isEmpty ? click.detail : click.menuDump
+            if targets.isEmpty && isServiceRunning && !kerioUIRunning {
+                return BringUpResult(
+                    ok: false,
+                    needsAccessibility: false,
+                    message: "Kerio daemon is running but the menu-bar UI was not found, so Connect was never clicked. Open Kerio from the menu bar once, or reinstall Kerio Control VPN Client. Dump: \(dump)"
+                )
+            }
             return BringUpResult(
-                ok: true,
+                ok: false,
                 needsAccessibility: false,
-                message: "Opened \(opened). Kerio Split cannot log in; click Connect in Kerio (menu extra or Connect button)."
+                message: "Could not click Connect in Kerio UI (\(opened)). Open the Kerio menu extra and Connect once, or grant Automation for System Events. Dump: \(dump)"
             )
         }
+    }
+
+    /// Launch Services open by bundle id when path discovery fails.
+    @discardableResult
+    private static func forceLaunchByBundleID() -> Bool {
+        var any = false
+        for bid in [statusBundleID, statusBundleIDAlt, agentBundleID, agentBundleIDAlt] {
+            let r = HelperService.runProcess("/usr/bin/open", ["-b", bid, "--hide"], timeoutSeconds: 4)
+            FlightRecorder.log("kerio", "open_bundle", [
+                "id": bid,
+                "ok": r.ok ? "1" : "0",
+                "out": r.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            ])
+            if r.ok { any = true }
+        }
+        return any
+    }
+
+    /// Rich environment snapshot for flight logs (no secrets).
+    static func environmentDump() -> String {
+        var lines: [String] = []
+        lines.append("axTrusted=\(AXIsProcessTrusted())")
+        lines.append("serviceRunning=\(isServiceRunning)")
+        lines.append("uiRunning=\(kerioUIRunning)")
+        lines.append("bundlePath=\(runningAppPath)")
+        let targets = launchTargets()
+        lines.append("launchTargets=\(targets.map(\.path).joined(separator: ";"))")
+        for bid in bundleIDs {
+            let url = urlForBundle(bid)?.path ?? "(not registered)"
+            lines.append("bundleID[\(bid)]=\(url)")
+        }
+        for path in appPaths + statusPaths + agentPaths {
+            let exists = FileManager.default.fileExists(atPath: path)
+            lines.append("path[\(path)]=\(exists ? "exists" : "missing")")
+        }
+        let procs = HelperService.runProcess(
+            "/bin/ps",
+            ["-axo", "pid,comm"],
+            timeoutSeconds: 2
+        ).text
+        let kerioProcs = procs
+            .split(separator: "\n")
+            .map(String.init)
+            .filter {
+                let l = $0.lowercased()
+                return l.contains("kerio") || l.contains("kvpn") || l.contains("vpnclient")
+            }
+        lines.append("processes=\(kerioProcs.isEmpty ? "(none)" : kerioProcs.joined(separator: " || "))")
+        let nc = HelperService.runProcess("/usr/sbin/scutil", ["--nc", "list"], timeoutSeconds: 2).text
+        lines.append("scutil_nc=\(nc.replacingOccurrences(of: "\n", with: " | "))")
+        return lines.joined(separator: "\n")
     }
 
     struct BringUpResult {
@@ -152,6 +239,8 @@ enum KerioLauncher {
 
         add(urlForBundle(agentBundleID) ?? firstExisting(agentPaths))
         add(urlForBundle(statusBundleID) ?? firstExisting(statusPaths))
+        add(urlForBundle(agentBundleIDAlt))
+        add(urlForBundle(statusBundleIDAlt))
         if urls.isEmpty {
             add(locateTarget())
         }
@@ -183,6 +272,8 @@ enum KerioLauncher {
     private static var kerioUIRunning: Bool {
         !NSRunningApplication.runningApplications(withBundleIdentifier: statusBundleID).isEmpty
             || !NSRunningApplication.runningApplications(withBundleIdentifier: agentBundleID).isEmpty
+            || !NSRunningApplication.runningApplications(withBundleIdentifier: statusBundleIDAlt).isEmpty
+            || !NSRunningApplication.runningApplications(withBundleIdentifier: agentBundleIDAlt).isEmpty
             || HelperService.runProcess("/usr/bin/pgrep", ["-x", "KVpnClientStatus"], timeoutSeconds: 1).ok
             || HelperService.runProcess("/usr/bin/pgrep", ["-x", "KVpnClientAgent"], timeoutSeconds: 1).ok
     }
@@ -322,6 +413,7 @@ enum KerioLauncher {
         }
         var kind: Kind
         var detail: String
+        var menuDump: String = ""
     }
 
     /// System Events — clicks Connect or Disconnect on the official Kerio menu extra / window.
@@ -332,11 +424,9 @@ enum KerioLauncher {
         set preferredServer to "\(server)"
         set wantDisconnect to \(wantOff)
         tell application "System Events"
-            -- Do not abort on "UI elements enabled"; that flag is stale after a rebuild.
-            -- Per-app TCC is checked by the click itself.
-
             set procNames to {"KVpnClientStatus", "KVpnClientAgent"}
             set skipNames to {"Disconnecting...", "Connecting...", "Connected", "Disconnected", "Quit", "About", "Cancel", "OK", "Close", "Preferences", "Settings"}
+            set seenDump to ""
 
             repeat with procNameRef in procNames
                 set procName to procNameRef as text
@@ -346,17 +436,19 @@ enum KerioLauncher {
                             if (count of menu bar items of menu bar 1) > 0 then
                                 set extraItem to menu bar item 1 of menu bar 1
                                 click extraItem
-                                delay 0.12
+                                delay 0.18
                                 if exists menu 1 of extraItem then
                                     set clickedName to ""
                                     set alreadyName to ""
                                     set hostName to ""
+                                    set itemList to {}
                                     repeat with mi in menu items of menu 1 of extraItem
                                         set itemName to ""
                                         try
                                             set itemName to name of mi as text
                                         end try
                                         if itemName is not "" then
+                                            set end of itemList to itemName
                                             if wantDisconnect then
                                                 if itemName is "Connect" or itemName is "Disconnected" then
                                                     set alreadyName to itemName
@@ -378,24 +470,33 @@ enum KerioLauncher {
                                             end if
                                         end if
                                     end repeat
+                                    set AppleScript's text item delimiters to ","
+                                    set seenDump to procName & ":[" & (itemList as text) & "]"
+                                    set AppleScript's text item delimiters to ""
                                     if alreadyName is not "" and clickedName is "" then
                                         try
                                             key code 53
                                         end try
-                                        return "ALREADY:" & alreadyName
+                                        return "ALREADY:" & alreadyName & "|DUMP:" & seenDump
                                     end if
                                     if wantDisconnect is false then
                                         if clickedName is "" and hostName is not "" then set clickedName to hostName
                                     end if
                                     if clickedName is not "" then
                                         click menu item clickedName of menu 1 of extraItem
-                                        return "CLICKED:menu:" & procName & ":" & clickedName
+                                        return "CLICKED:menu:" & procName & ":" & clickedName & "|DUMP:" & seenDump
                                     end if
                                     try
                                         key code 53
                                     end try
+                                else
+                                    set seenDump to procName & ":[no-menu-after-click]"
                                 end if
+                            else
+                                set seenDump to procName & ":[no-menu-bar-items]"
                             end if
+                        on error errMsg
+                            set seenDump to procName & ":[err:" & errMsg & "]"
                         end try
 
                         set winCount to 0
@@ -409,47 +510,65 @@ enum KerioLauncher {
                                 tell window wIndex
                                     if exists button targetBtn then
                                         click button targetBtn
-                                        return "CLICKED:button:" & procName
+                                        return "CLICKED:button:" & procName & "|DUMP:" & seenDump
                                     end if
                                 end tell
                             end try
                         end repeat
+                        if seenDump is "" then set seenDump to procName & ":[windows=" & winCount & "]"
                     end tell
                 end if
             end repeat
-            return "NO_UI"
+            if seenDump is "" then
+                return "NO_UI|DUMP:no-kerio-process"
+            end if
+            return "NO_UI|DUMP:" & seenDump
         end tell
         """
 
         let result = runAppleScript(source)
         let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parsed = splitDump(text)
+
         if !result.ok {
             let lower = text.lowercased()
+            FlightRecorder.log("kerio", "applescript_fail", ["err": text])
             if lower.contains("assistive") || lower.contains("not allowed") || text.contains("-25211") || text.contains("-1743") {
                 DispatchQueue.main.async {
                     KerioLauncher.ensureControlPermissions()
                 }
-                return ClickResult(kind: .accessibilityOff, detail: text)
+                return ClickResult(kind: .accessibilityOff, detail: text, menuDump: parsed.dump)
             }
             if lower.contains("ui elements") || lower.contains("accessibility") {
                 DispatchQueue.main.async {
                     KerioLauncher.openAccessibilitySettings()
                 }
-                return ClickResult(kind: .accessibilityOff, detail: text)
+                return ClickResult(kind: .accessibilityOff, detail: text, menuDump: parsed.dump)
             }
-            return ClickResult(kind: .noControl, detail: text.isEmpty ? "AppleScript could not drive Kerio UI" : text)
+            return ClickResult(kind: .noControl, detail: text.isEmpty ? "AppleScript could not drive Kerio UI" : text, menuDump: parsed.dump)
         }
 
-        if text.hasPrefix("CLICKED:") {
-            return ClickResult(kind: .clicked, detail: String(text.dropFirst("CLICKED:".count)))
+        if parsed.head.hasPrefix("CLICKED:") {
+            return ClickResult(kind: .clicked, detail: String(parsed.head.dropFirst("CLICKED:".count)), menuDump: parsed.dump)
         }
-        if text.hasPrefix("ALREADY:") {
-            return ClickResult(kind: .alreadyActive, detail: String(text.dropFirst("ALREADY:".count)))
+        if parsed.head.hasPrefix("ALREADY:") {
+            return ClickResult(kind: .alreadyActive, detail: String(parsed.head.dropFirst("ALREADY:".count)), menuDump: parsed.dump)
         }
-        if text == "AX_OFF" {
-            return ClickResult(kind: .accessibilityOff, detail: "Accessibility is off for Kerio Split")
+        if parsed.head == "AX_OFF" {
+            return ClickResult(kind: .accessibilityOff, detail: "Accessibility is off for Kerio Split", menuDump: parsed.dump)
         }
-        return ClickResult(kind: .noControl, detail: text.isEmpty ? "No Connect control in Kerio UI" : text)
+        return ClickResult(
+            kind: .noControl,
+            detail: parsed.head.isEmpty ? "No Connect control in Kerio UI" : parsed.head,
+            menuDump: parsed.dump
+        )
+    }
+
+    private static func splitDump(_ text: String) -> (head: String, dump: String) {
+        if let range = text.range(of: "|DUMP:") {
+            return (String(text[..<range.lowerBound]), String(text[range.upperBound...]))
+        }
+        return (text, "")
     }
 
     /// Click official Disconnect in the Kerio menu extra (same Accessibility path as Connect).

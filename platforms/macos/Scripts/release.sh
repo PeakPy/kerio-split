@@ -132,6 +132,7 @@ swiftc -parse-as-library \
   "$APP_SRC/VPNTopologyView.swift" \
   "$APP_SRC/NetworkPulsePanel.swift" \
   "$APP_SRC/ThroughputMonitor.swift" \
+  "$APP_SRC/FlightRecorder.swift" \
   -o "$MACOS/KerioSplit" \
   -sdk "$SDK" \
   -target "$TARGET" \

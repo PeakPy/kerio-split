@@ -111,7 +111,7 @@ final class TunnelController: ObservableObject {
     var configPathDisplay: String { configURL.path }
 
     var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.2.0"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.2.9"
     }
 
     var menuBarSubtitle: String {
@@ -145,6 +145,10 @@ final class TunnelController: ObservableObject {
     private var autoApplyTriggered = false
     private var connectAllTask: DispatchWorkItem?
     private var lastLoggedDiagnosis: String?
+    private var lastNetFingerprint = ""
+    /// After Disconnect All, block auto Connect All / auto-apply so we don't bounce back online.
+    private var suppressAutoApplyUntil: Date?
+    private var kerioDownStreak = 0
 
     private var supportRoot: URL {
         fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -196,6 +200,7 @@ final class TunnelController: ObservableObject {
         }
         didBootstrap = true
         isBusy = false
+        FlightRecorder.bootstrap(version: appVersion)
         ensureWritableSupport()
         loadConfig()
         detectApplied()
@@ -206,6 +211,14 @@ final class TunnelController: ObservableObject {
         // Everything that might talk to the system goes after the first frame.
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+            FlightRecorder.log("boot", "post_frame", [
+                "helperReady": self.helperReady ? "1" : "0",
+                "isActive": self.isActive ? "1" : "0",
+                "ax": KerioLauncher.isAccessibilityTrusted ? "1" : "0"
+            ])
+            FlightRecorder.log("boot", "env_dump", [
+                "dump": KerioLauncher.environmentDump().replacingOccurrences(of: "\n", with: " || ")
+            ])
             self.syncLaunchAtLoginFromSystem()
             self.syncScriptsToSupport()
             self.refreshHelperStatus()
@@ -220,8 +233,10 @@ final class TunnelController: ObservableObject {
                 UserDefaults.standard.set(false, forKey: Self.resumeConnectKey)
             }
             if resumeConnect, self.helperReady, !self.isActive {
+                FlightRecorder.log("boot", "auto_resume_connect", [:])
                 self.connectAll()
             } else if self.config.options.autoApplyOnLaunch, self.helperReady, !self.isActive {
+                FlightRecorder.log("boot", "auto_apply_on_launch", ["kerioSeen": self.kerioTunnelSeen ? "1" : "0"])
                 if self.kerioTunnelSeen {
                     self.apply()
                 } else {
@@ -339,6 +354,14 @@ final class TunnelController: ObservableObject {
     }
 
     private func setBusy(_ value: Bool, watchdogSeconds: TimeInterval = 20) {
+        if isBusy != value {
+            FlightRecorder.log("ui", "busy", [
+                "from": isBusy ? "1" : "0",
+                "to": value ? "1" : "0",
+                "watchdog": "\(Int(watchdogSeconds))",
+                "phase": sessionPhase.rawValue
+            ])
+        }
         isBusy = value
         busyWatchdog?.invalidate()
         busyWatchdog = nil
@@ -347,6 +370,10 @@ final class TunnelController: ObservableObject {
         busyWatchdog = Timer(timeInterval: watchdogSeconds, repeats: false) { [weak self] _ in
             Task { @MainActor in
                 guard let self, self.isBusy else { return }
+                FlightRecorder.log("ui", "busy_watchdog_fire", [
+                    "phase": self.sessionPhase.rawValue,
+                    "waitingKerio": self.isWaitingForKerio ? "1" : "0"
+                ])
                 self.isBusy = false
                 self.isWaitingForKerio = false
                 self.resetToIdleTimeline(status: "Timed out — see Activity")
@@ -540,34 +567,66 @@ final class TunnelController: ObservableObject {
             updateStep("allow", .failed, "Connect All is locked until the route helper is installed.")
             return
         }
+        // Manual / intentional connect clears the post-disconnect suppress window.
+        suppressAutoApplyUntil = nil
 
         connectAllTask?.cancel()
         isWaitingForKerio = true
         waitingForAccessibility = false
         sessionPhase = .connecting
         setBusy(true, watchdogSeconds: kerioConnectWaitSeconds + 120)
+        saveConfig(quiet: true)
+        syncScriptsToSupport()
+
         let backend = config.options.connectBackend
         let systemVPNName = config.options.systemVPNName
         let openvpnPath = config.options.openvpnConfigPath
         let persistentHint = kerioSaved.persistent
         let kerioServer = kerioSaved.server
-        pinStatus("Connect All — starting official Kerio client, then split…")
+        let pinIf = config.options.kerioInterface
+        let pinGw = config.options.kerioGateway
+        let ignoreIfaces = config.options.ignoreInterfaces
+        let vpnRoutes = config.vpnRoutes
+
+        let finishingOnly = kerioSessionConnected || kerioTunnelSeen
+        pinStatus(finishingOnly
+            ? "Apply Split — waiting for tunnel address, then applying…"
+            : "Connect All — starting official Kerio client, then split…")
         loadConnectTimeline()
         updateStep("allow", .done, "Passwordless helper ready.")
-        updateStep("kerio", .running, "Checking whether a tunnel is already up…")
-        updateStep("tunnel", .pending, "Waiting for the VPN tunnel.")
-        updateStep("split", .pending, "Split applies after the tunnel is up.")
+        updateStep("kerio", .running, finishingOnly
+            ? "Kerio session already up — finishing split…"
+            : "Checking whether a tunnel is already up…")
+        updateStep("tunnel", .pending, "Waiting for tunnel interface + IPv4.")
+        updateStep("split", .pending, "Split applies after the tunnel address is ready.")
+
+        FlightRecorder.log("connect", "start", [
+            "finishingOnly": finishingOnly ? "1" : "0",
+            "helperReady": helperReady ? "1" : "0",
+            "canClick": canClickKerio ? "1" : "0",
+            "backend": "\(backend)",
+            "preferredServer": kerioServer.isEmpty ? "(none)" : kerioServer
+        ])
+        FlightRecorder.log("connect", "env_dump", ["dump": KerioLauncher.environmentDump().replacingOccurrences(of: "\n", with: " || ")])
 
         var work: DispatchWorkItem!
         work = DispatchWorkItem { [weak self] in
             guard let self else { return }
 
-            var network = Self.scanNetwork()
+            var snap = Self.scanNetworkFull(
+                pinnedInterface: pinIf,
+                pinnedGateway: pinGw,
+                ignoreInterfaces: ignoreIfaces,
+                vpnRoutes: vpnRoutes
+            )
             DispatchQueue.main.async {
-                self.applyNetworkScan(network)
+                self.probeNetwork()
             }
 
-            if !network.hasKerio {
+            var lastClickRetry = Date.distantPast
+            var clickAttempts = 0
+
+            if !snap.hasKerioTunnel {
                 DispatchQueue.main.async {
                     self.updateStep("kerio", .running, Self.bringUpDetail(backend, persistent: persistentHint))
                     self.pinStatus(Self.bringUpStatus(backend, persistent: persistentHint))
@@ -579,6 +638,13 @@ final class TunnelController: ObservableObject {
                     openvpnPath: openvpnPath,
                     kerioServer: kerioServer
                 )
+                clickAttempts += 1
+                lastClickRetry = Date()
+                FlightRecorder.log("connect", "bring_up", [
+                    "ok": launch.ok ? "1" : "0",
+                    "needsAX": launch.needsAccessibility ? "1" : "0",
+                    "msg": launch.message
+                ])
 
                 if launch.needsAccessibility {
                     launch = self.waitForAccessibilityAndRetryBringUp(
@@ -596,6 +662,8 @@ final class TunnelController: ObservableObject {
                         }
                         return
                     }
+                    clickAttempts += 1
+                    lastClickRetry = Date()
                 }
 
                 DispatchQueue.main.async {
@@ -614,31 +682,154 @@ final class TunnelController: ObservableObject {
                         )
                     } else {
                         self.updateStep("kerio", .failed, launch.message)
-                    }
-                }
-
-                let deadline = Date().addingTimeInterval(self.kerioConnectWaitSeconds)
-                while Date() < deadline {
-                    if work.isCancelled {
-                        DispatchQueue.main.async {
-                            self.isWaitingForKerio = false
-                            self.waitingForAccessibility = false
-                            self.setBusy(false)
-                        }
-                        return
-                    }
-                    Thread.sleep(forTimeInterval: 1)
-                    network = Self.scanNetwork()
-                    if network.hasKerio { break }
-                    let remaining = max(0, Int(deadline.timeIntervalSinceNow))
-                    DispatchQueue.main.async {
-                        self.updateStep("tunnel", .running, "Still waiting for VPN tunnel (\(remaining)s)")
-                        self.pinStatus(Self.waitStatus(backend, remaining: remaining, persistent: persistentHint))
+                        self.updateStep("tunnel", .running, "Will keep retrying Connect click while waiting…")
+                        self.pinStatus("Could not click Connect yet — retrying. Or Connect from Kerio menu bar.", seconds: 10)
                     }
                 }
             } else {
                 DispatchQueue.main.async {
-                    self.updateStep("kerio", .done, "VPN tunnel already up.")
+                    self.updateStep("kerio", .done, "VPN session already up.")
+                    self.updateStep("tunnel", .running, snap.readyForSplitApply
+                        ? "Tunnel address ready."
+                        : "Session up — waiting for tunnel IPv4…")
+                }
+            }
+
+            // Wait until Kerio has a real utun + IPv4 (session Connected alone is not enough for apply).
+            // While waiting, re-click Connect every ~8s if still disconnected (diag + reliability).
+            let deadline = Date().addingTimeInterval(self.kerioConnectWaitSeconds)
+            while Date() < deadline {
+                if work.isCancelled {
+                    DispatchQueue.main.async {
+                        self.isWaitingForKerio = false
+                        self.waitingForAccessibility = false
+                        self.setBusy(false)
+                        FlightRecorder.log("connect", "cancelled", [:])
+                    }
+                    return
+                }
+                snap = Self.scanNetworkFull(
+                    pinnedInterface: pinIf,
+                    pinnedGateway: pinGw,
+                    ignoreInterfaces: ignoreIfaces,
+                    vpnRoutes: vpnRoutes
+                )
+                if snap.readyForSplitApply { break }
+
+                if !snap.hasKerioTunnel,
+                   backend == .kerioClient,
+                   Date().timeIntervalSince(lastClickRetry) >= 8 {
+                    lastClickRetry = Date()
+                    clickAttempts += 1
+                    let retry = KerioLauncher.startOfficialSession(preferredServer: kerioServer)
+                    FlightRecorder.log("connect", "click_retry", [
+                        "attempt": "\(clickAttempts)",
+                        "ok": retry.ok ? "1" : "0",
+                        "needsAX": retry.needsAccessibility ? "1" : "0",
+                        "msg": retry.message
+                    ])
+                    DispatchQueue.main.async {
+                        self.appendLog("Connect click retry #\(clickAttempts): \(retry.message)")
+                        if retry.needsAccessibility {
+                            self.canClickKerio = false
+                        } else if retry.ok {
+                            self.updateStep("kerio", .done, retry.message)
+                        }
+                    }
+                    if retry.needsAccessibility {
+                        DispatchQueue.main.async {
+                            self.finishConnectBlockedOnAccessibility(message: retry.message)
+                        }
+                        return
+                    }
+                }
+
+                let remaining = max(0, Int(deadline.timeIntervalSinceNow))
+                DispatchQueue.main.async {
+                    if snap.hasKerioTunnel {
+                        self.updateStep("kerio", .done, "VPN session reachable.")
+                        self.updateStep(
+                            "tunnel",
+                            .running,
+                            "Session up — waiting for tunnel IPv4 (\(remaining)s)"
+                        )
+                        self.pinStatus("Kerio Connected — waiting for tunnel address before split…")
+                    } else {
+                        self.updateStep("tunnel", .running, "Still waiting for VPN tunnel (\(remaining)s) · clicks=\(clickAttempts)")
+                        self.pinStatus(Self.waitStatus(backend, remaining: remaining, persistent: persistentHint))
+                    }
+                }
+                if remaining % 10 == 0 {
+                    FlightRecorder.log("connect", "wait_tick", [
+                        "remaining": "\(remaining)",
+                        "hasKerio": snap.hasKerioTunnel ? "1" : "0",
+                        "session": snap.kerioSessionConnected ? "1" : "0",
+                        "iface": snap.kerioInterface,
+                        "addr": snap.kerioTunnelAddress,
+                        "clicks": "\(clickAttempts)",
+                        "evidence": snap.tunnelEvidence.joined(separator: ";")
+                    ])
+                }
+                Thread.sleep(forTimeInterval: 1)
+            }
+
+            if work.isCancelled { return }
+
+            guard snap.readyForSplitApply else {
+                DispatchQueue.main.async {
+                    self.isWaitingForKerio = false
+                    self.waitingForAccessibility = false
+                    self.setBusy(false)
+                    self.sessionPhase = .idle
+                    if snap.hasKerioTunnel {
+                        self.updateStep("tunnel", .failed, "Session up but no tunnel IPv4 in time.")
+                        self.updateStep("split", .failed, "Tap Apply Split once the tunnel address appears.")
+                        self.pinStatus("Kerio session up — tap Apply Split again when the tunnel is ready", seconds: 14)
+                    } else {
+                        self.updateStep("tunnel", .failed, "No tunnel in \(Int(self.kerioConnectWaitSeconds))s.")
+                        self.updateStep("split", .skipped, "Split waits until a VPN tunnel is connected.")
+                        self.pinStatus(Self.timeoutStatus(backend), seconds: 14)
+                        self.notify(title: "VPN not connected", body: Self.timeoutStatus(backend))
+                    }
+                    self.probeNetwork()
+                }
+                return
+            }
+
+            DispatchQueue.main.async {
+                self.updateStep("kerio", .done, "VPN tunnel reachable.")
+                self.updateStep(
+                    "tunnel",
+                    .done,
+                    "\(snap.kerioInterface) · \(snap.kerioTunnelAddress)"
+                )
+                self.updateStep("split", .running, "Applying split routes without a password…")
+                self.pinStatus("Tunnel ready — applying split…")
+            }
+
+            // Retry apply: first attempt often races Kerio route install.
+            let maxAttempts = 6
+            var lastOutput = ""
+            var applied = false
+            for attempt in 1...maxAttempts {
+                if work.isCancelled { return }
+                if attempt > 1 {
+                    DispatchQueue.main.async {
+                        self.updateStep("split", .running, "Retrying split apply (\(attempt)/\(maxAttempts))…")
+                        self.pinStatus("Retrying split apply (\(attempt)/\(maxAttempts))…")
+                    }
+                    Thread.sleep(forTimeInterval: 1.2)
+                }
+                let result = HelperService.runCtl(["apply"])
+                lastOutput = result.text
+                if result.ok
+                    || result.text.contains("split tunnel applied")
+                    || result.text.contains("hijack") {
+                    applied = true
+                    break
+                }
+                if result.text.contains("helper is not active") || result.text.contains("Passwordless helper") {
+                    break
                 }
             }
 
@@ -646,40 +837,33 @@ final class TunnelController: ObservableObject {
                 if work.isCancelled { return }
                 self.isWaitingForKerio = false
                 self.waitingForAccessibility = false
-                self.applyNetworkScan(network)
-
-                if network.hasKerio {
-                    self.updateStep("kerio", .done, "VPN tunnel reachable.")
-                    self.updateStep("tunnel", .done, Self.tunnelDetail(network))
-                    self.updateStep("split", .running, "Applying split routes without a password…")
-                    self.pinStatus("Tunnel up — applying split…")
-                    self.runEngine(arguments: ["apply"]) { ok, output in
-                        if ok || output.contains("split tunnel applied") || output.contains("hijack") {
-                            self.isActive = true
-                            self.sessionPhase = .connected
-                            self.updateStep("split", .done, "Split ON — only VPN routes use the tunnel.")
-                            self.pinStatus("Connect All complete — split ON")
-                            self.notify(
-                                title: "Connect All",
-                                body: "VPN tunnel detected and split routes applied."
-                            )
-                        } else {
-                            self.sessionPhase = .idle
-                            self.updateStep("split", .failed, "Split apply failed. See Activity.")
-                        }
-                        self.probeNetwork()
-                    }
-                } else {
-                    self.setBusy(false)
-                    self.sessionPhase = .idle
-                    self.updateStep("tunnel", .failed, "No tunnel in \(Int(self.kerioConnectWaitSeconds))s.")
-                    self.updateStep("split", .skipped, "Split waits until a VPN tunnel is connected.")
-                    self.pinStatus(Self.timeoutStatus(backend), seconds: 14)
+                self.appendLog(lastOutput.isEmpty ? (applied ? "OK" : "Failed") : lastOutput)
+                self.setBusy(false)
+                self.detectApplied()
+                if applied || self.isActive {
+                    self.isActive = true
+                    self.sessionPhase = .connected
+                    self.updateStep("split", .done, "Split ON — only VPN routes use the tunnel.")
+                    self.pinStatus("Connect All complete — split ON")
+                    FlightRecorder.log("connect", "complete_ok", [
+                        "iface": snap.kerioInterface,
+                        "addr": snap.kerioTunnelAddress
+                    ])
                     self.notify(
-                        title: "VPN not connected",
-                        body: Self.timeoutStatus(backend)
+                        title: "Connect All",
+                        body: "VPN tunnel ready and split routes applied."
                     )
+                    self.learnPinFromSnapshot()
+                    self.loadConnectedTimeline()
+                } else {
+                    self.sessionPhase = .idle
+                    self.autoApplyTriggered = false
+                    self.updateStep("split", .failed, "Split apply failed. See Activity, then tap Apply Split.")
+                    self.pinStatus("Split not applied — tap Apply Split once more", seconds: 12)
+                    FlightRecorder.log("connect", "complete_fail_apply", ["out": lastOutput])
+                    self.syncTimelineFromReality()
                 }
+                self.probeNetwork()
             }
         }
 
@@ -861,8 +1045,15 @@ final class TunnelController: ObservableObject {
         isWaitingForKerio = false
         waitingForAccessibility = false
         isTearingDown = true
+        // Critical: flight log showed Disconnect → immediately Connect All via auto-apply.
+        suppressAutoApplyUntil = Date().addingTimeInterval(90)
+        autoApplyTriggered = true
         sessionPhase = .disconnecting
-        setBusy(true, watchdogSeconds: 50)
+        setBusy(true, watchdogSeconds: 70)
+        FlightRecorder.log("disconnect", "start", [
+            "suppressAutoApplySec": "90",
+            "sessionWas": kerioSessionConnected ? "1" : "0"
+        ])
 
         let backend = config.options.connectBackend
         let systemVPNName = config.options.systemVPNName
@@ -886,10 +1077,43 @@ final class TunnelController: ObservableObject {
             self.pinStatus("Split off — disconnecting VPN…")
 
             DispatchQueue.global(qos: .userInitiated).async {
-                let stop = Self.bringDownVPN(backend: backend, systemVPNName: systemVPNName)
+                var stop = Self.bringDownVPN(backend: backend, systemVPNName: systemVPNName)
+                // Wait until scutil shows Disconnected — otherwise auto-apply reconnects instantly.
+                let deadline = Date().addingTimeInterval(20)
+                var stillUp = true
+                var clicks = 1
+                var lastRetry = Date()
+                while Date() < deadline {
+                    let snap = Self.scanNetworkFull(
+                        pinnedInterface: "",
+                        pinnedGateway: "",
+                        ignoreInterfaces: [],
+                        vpnRoutes: []
+                    )
+                    if !snap.kerioSessionConnected {
+                        stillUp = false
+                        break
+                    }
+                    if Date().timeIntervalSince(lastRetry) >= 5, clicks < 3 {
+                        lastRetry = Date()
+                        clicks += 1
+                        stop = Self.bringDownVPN(backend: backend, systemVPNName: systemVPNName)
+                        FlightRecorder.log("disconnect", "retry_click", [
+                            "n": "\(clicks)",
+                            "ok": stop.ok ? "1" : "0",
+                            "msg": stop.message
+                        ])
+                    }
+                    Thread.sleep(forTimeInterval: 1)
+                }
+                FlightRecorder.log("disconnect", "wait_done", [
+                    "stillUp": stillUp ? "1" : "0",
+                    "clicks": "\(clicks)",
+                    "stopOk": stop.ok ? "1" : "0"
+                ])
                 DispatchQueue.main.async {
                     self.appendLog(stop.message)
-                    if stop.ok {
+                    if !stillUp {
                         self.updateStep("kerio", .done, stop.message)
                         self.updateStep("tunnel", .done, "VPN session stopped.")
                         self.pinStatus("Disconnect All complete")
@@ -897,13 +1121,14 @@ final class TunnelController: ObservableObject {
                             title: "Disconnect All",
                             body: "Split routes restored and VPN session stopped."
                         )
+                        self.finishDisconnect(success: true)
                     } else {
                         self.updateStep("kerio", .failed, stop.message)
-                        self.updateStep("tunnel", .skipped, "Click Disconnect in Kerio if the tunnel is still up.")
-                        self.pinStatus(stop.message, seconds: 14)
+                        self.updateStep("tunnel", .skipped, "Kerio session still Connected — click Disconnect in the menu bar if needed.")
+                        self.pinStatus("Split OFF — Kerio still Connected. Auto Connect is paused for 90s.", seconds: 14)
                         self.notify(title: "VPN still connected?", body: stop.message)
+                        self.finishDisconnect(success: false)
                     }
-                    self.finishDisconnect(success: stop.ok)
                 }
             }
         }
@@ -969,16 +1194,32 @@ final class TunnelController: ObservableObject {
 
         if snap.hasKerioTunnel && !wasSeen {
             kerioWasSeen = true
+            kerioDownStreak = 0
             let evidence = snap.tunnelEvidence.isEmpty
                 ? (snap.kerioInterface.isEmpty ? "session/routes" : snap.kerioInterface)
                 : snap.tunnelEvidence.joined(separator: "; ")
             recordEvent("Kerio tunnel UP — \(evidence)")
         } else if !snap.hasKerioTunnel && wasSeen {
-            kerioWasSeen = false
-            autoApplyTriggered = false
-            recordEvent("Kerio tunnel DOWN")
+            kerioDownStreak += 1
+            // Require 3 consecutive downs before treating as real down (scutil flickers).
+            if kerioDownStreak >= 3 {
+                kerioWasSeen = false
+                kerioDownStreak = 0
+                // Do not clear autoApplyTriggered here if we are in post-disconnect suppress window.
+                if suppressAutoApplyUntil == nil || Date() >= (suppressAutoApplyUntil ?? .distantPast) {
+                    autoApplyTriggered = false
+                }
+                recordEvent("Kerio tunnel DOWN")
+            } else {
+                FlightRecorder.log("net", "kerio_down_debounce", ["streak": "\(kerioDownStreak)"])
+            }
+        } else if snap.hasKerioTunnel {
+            kerioDownStreak = 0
         } else if !snap.hasKerioTunnel {
-            autoApplyTriggered = false
+            // Keep autoApply suppressed after intentional disconnect.
+            if suppressAutoApplyUntil == nil || Date() >= (suppressAutoApplyUntil ?? .distantPast) {
+                // leave autoApplyTriggered as-is unless we never connected
+            }
         }
 
         // Drop false "Outbound Connected" only when the engine is truly gone.
@@ -1004,6 +1245,27 @@ final class TunnelController: ObservableObject {
             recordEvent("Kerio session Connected — \(snap.kerioSessionLabel)")
         } else if !snap.kerioSessionConnected && wasSession {
             recordEvent("Kerio session Disconnected")
+        }
+
+        let fp = [
+            "sess=\(snap.kerioSessionConnected ? 1 : 0)",
+            "iface=\(snap.kerioInterface)",
+            "addr=\(snap.kerioTunnelAddress)",
+            "hijack=\(snap.fullTunnelHijack ? 1 : 0)",
+            "split=\(isActive ? 1 : 0)",
+            "out=\(outboundConnected ? 1 : 0)",
+            "outIf=\(snap.outboundInterface)",
+            "def=\(snap.defaultInterface)",
+            "phase=\(sessionPhase.rawValue)",
+            "busy=\(isBusy ? 1 : 0)"
+        ].joined(separator: ",")
+        if fp != lastNetFingerprint {
+            FlightRecorder.log("net", "state_change", [
+                "from": lastNetFingerprint.isEmpty ? "(boot)" : lastNetFingerprint,
+                "to": fp,
+                "evidence": snap.tunnelEvidence.joined(separator: ";")
+            ])
+            lastNetFingerprint = fp
         }
 
         // Drop stale pin when Kerio is fully down (iface gone) so we don't
@@ -1037,15 +1299,30 @@ final class TunnelController: ObservableObject {
     }
 
     private func maybeAutoApplySplit() {
+        if let until = suppressAutoApplyUntil, Date() < until {
+            return
+        }
+        if let until = suppressAutoApplyUntil, Date() >= until {
+            suppressAutoApplyUntil = nil
+        }
         guard config.options.autoApplyWhenKerioConnects,
-              kerioTunnelSeen,
+              networkSnapshot.readyForSplitApply,
               !isActive,
               !isBusy,
+              !isTearingDown,
               helperReady,
-              !autoApplyTriggered else { return }
+              !autoApplyTriggered,
+              sessionPhase != .connecting,
+              sessionPhase != .waitingForPermission,
+              sessionPhase != .disconnecting else { return }
         autoApplyTriggered = true
-        pinStatus("Kerio connected — auto-applying split…")
-        apply()
+        pinStatus("Kerio ready — auto-applying split…")
+        FlightRecorder.log("connect", "auto_apply", [
+            "iface": networkSnapshot.kerioInterface,
+            "addr": networkSnapshot.kerioTunnelAddress
+        ])
+        // Reuse Connect All path so we get retries + iface wait consistency.
+        connectAll()
     }
 
     private func applyNetworkScan(_ result: (hasKerio: Bool, utuns: [String], hasHijack: Bool)) {
@@ -1055,14 +1332,28 @@ final class TunnelController: ObservableObject {
     }
 
     private nonisolated static func scanNetwork() -> (hasKerio: Bool, utuns: [String], hasHijack: Bool) {
-        let snap = NetworkSense.scan(
+        let snap = scanNetworkFull(
             pinnedInterface: "",
             pinnedGateway: "",
             ignoreInterfaces: [],
-            vpnRoutes: [],
-            splitActive: false
+            vpnRoutes: []
         )
         return (snap.hasKerioTunnel, snap.allUtuns, snap.fullTunnelHijack)
+    }
+
+    private nonisolated static func scanNetworkFull(
+        pinnedInterface: String,
+        pinnedGateway: String,
+        ignoreInterfaces: [String],
+        vpnRoutes: [String]
+    ) -> NetworkSnapshot {
+        NetworkSense.scan(
+            pinnedInterface: pinnedInterface,
+            pinnedGateway: pinnedGateway,
+            ignoreInterfaces: ignoreInterfaces,
+            vpnRoutes: vpnRoutes,
+            splitActive: false
+        )
     }
 
     private func requestNotificationsIfNeeded() {
@@ -1472,9 +1763,17 @@ final class TunnelController: ObservableObject {
         } else {
             sessionPhase = .idle
             loadConnectTimeline()
-            if kerioTunnelSeen {
-                updateStep("kerio", .running, "VPN tunnel is up — Connect All applies split, or Disconnect All stops it.")
-                updateStep("tunnel", .done, tunnelInterfaces.isEmpty ? "VPN tunnel detected" : "VPN tunnel up")
+            if kerioTunnelSeen || kerioSessionConnected {
+                updateStep("kerio", .done, kerioSessionConnected
+                    ? "Kerio session Connected — split still OFF."
+                    : "VPN tunnel is up — split still OFF.")
+                if networkSnapshot.readyForSplitApply {
+                    updateStep("tunnel", .done, "\(networkSnapshot.kerioInterface) · \(networkSnapshot.kerioTunnelAddress)")
+                    updateStep("split", .pending, "Tap Apply Split once to finish.")
+                } else {
+                    updateStep("tunnel", .running, "Waiting for tunnel IPv4 before split can apply.")
+                    updateStep("split", .pending, "Split waits for a tunnel address.")
+                }
             }
         }
     }
@@ -1616,6 +1915,36 @@ final class TunnelController: ObservableObject {
         NSPasteboard.general.setString(diagnosticReport.plainText, forType: .string)
         pinStatus("Diagnostics copied", seconds: 4)
         recordEvent("Diagnostics copied to clipboard")
+    }
+
+    /// Full flight recorder + diagnostics + engine log — paste this into chat for analysis.
+    func copyFlightLog() {
+        refreshDiagnostics()
+        probeNetwork()
+        let extra = [
+            diagnosticReport.plainText,
+            "",
+            "=== scenario ===",
+            "\(scenario.title) — \(scenario.detail)",
+            "",
+            "=== engine log ===",
+            log.isEmpty ? "(empty)" : log,
+            "",
+            "=== kerio env ===",
+            KerioLauncher.environmentDump()
+        ].joined(separator: "\n")
+        let text = FlightRecorder.exportText(extra: extra)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        pinStatus("Flight log copied — paste it in chat", seconds: 8)
+        recordEvent("Flight log copied (\(FlightRecorder.filePath))")
+        FlightRecorder.log("ui", "flight_copied", ["chars": "\(text.count)"])
+    }
+
+    func revealFlightLog() {
+        let url = URL(fileURLWithPath: FlightRecorder.filePath)
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+        pinStatus("Revealed flight log in Finder", seconds: 4)
     }
 
     func performScenarioAction(_ action: ScenarioAction) {
@@ -1802,7 +2131,8 @@ final class TunnelController: ObservableObject {
 
         // If Kerio full-tunnel is eating the default route, peel it back first so
         // outbound can dial on LAN. Outbound itself never rides inside Kerio.
-        if helperReady, !isActive, snap.fullTunnelHijack {
+        // Only when Kerio session is actually up — outbound's own 0/1 is not Kerio.
+        if helperReady, !isActive, snap.fullTunnelHijack, snap.kerioSessionConnected {
             await ensureSplitAppliedForOutbound()
         }
 
@@ -1961,7 +2291,8 @@ final class TunnelController: ObservableObject {
         guard config.options.routeGuardEnabled, isActive, helperReady, !isBusy, !guardInFlight else { return }
         guard networkSnapshot.conflict || !networkSnapshot.managedRoutesMissing.isEmpty else { return }
         guardInFlight = true
-        runEngine(arguments: ["guard"], keepBusy: false) { [weak self] ok, output in
+        // keepBusy: true so we don't flicker the Connect/Disconnect buttons every guard tick.
+        runEngine(arguments: ["guard"], keepBusy: true) { [weak self] ok, output in
             guard let self else { return }
             self.guardInFlight = false
             if ok || output.contains("guard=") {

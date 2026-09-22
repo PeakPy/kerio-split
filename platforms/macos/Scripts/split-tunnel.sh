@@ -229,6 +229,8 @@ detect_vpn_interface() {
     iface_ignored "$ifc" && continue
     inet="$(ifconfig "$ifc" 2>/dev/null | awk '/inet /{print $2; exit}')"
     [[ -n "$inet" ]] || continue
+    # Never treat built-in outbound TUN (172.19.0.0/30) as Kerio.
+    case "$inet" in 172.19.0.*) continue ;; esac
     if [[ -n "${BEFORE_IFACES:-}" && " ${BEFORE_IFACES} " != *" $ifc "* ]]; then
       echo "$ifc"; return 0
     fi
@@ -236,7 +238,10 @@ detect_vpn_interface() {
   for ifc in $(ifconfig -l); do
     case "$ifc" in utun*|kvnet*|kerio*) ;; *) continue ;; esac
     iface_ignored "$ifc" && continue
-    if ifconfig "$ifc" 2>/dev/null | grep -q 'inet '; then echo "$ifc"; return 0; fi
+    inet="$(ifconfig "$ifc" 2>/dev/null | awk '/inet /{print $2; exit}')"
+    [[ -n "$inet" ]] || continue
+    case "$inet" in 172.19.0.*) continue ;; esac
+    echo "$ifc"; return 0
   done
   return 1
 }

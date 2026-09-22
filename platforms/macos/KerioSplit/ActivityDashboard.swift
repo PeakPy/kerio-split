@@ -43,6 +43,30 @@ struct ActivityDashboard: View {
                     .controlSize(.small)
                 }
 
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("If something looks wrong, Copy flight log and paste it in chat — it includes connect clicks, network flips, and Kerio state.")
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundStyle(Brand.deep)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(FlightRecorder.filePath)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(Brand.muted)
+                        .textSelection(.enabled)
+                    ButtonRow {
+                        Button("Copy flight log") { controller.copyFlightLog() }
+                            .buttonStyle(.borderedProminent)
+                            .tint(Brand.deep)
+                        Button("Reveal log file") { controller.revealFlightLog() }
+                            .buttonStyle(.bordered)
+                    }
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Brand.primary.opacity(0.08))
+                )
+
                 if !controller.diagnosticReport.suggestedFix.isEmpty {
                     Text(controller.diagnosticReport.suggestedFix)
                         .font(.system(size: 12, weight: .semibold, design: .rounded))

@@ -430,6 +430,7 @@ enum SingBoxConfigBuilder {
         let lan = Self.physicalLAN(bindInterface)
         outbound["tcp_fast_open"] = true
         outbound["udp_fragment"] = true
+        outbound["tcp_multi_path"] = true
         // CRITICAL: proxy dial must leave via Wi-Fi/Ethernet — never Kerio utun.
         if !lan.isEmpty {
             outbound["bind_interface"] = lan
@@ -439,7 +440,8 @@ enum SingBoxConfigBuilder {
             "type": "tun",
             "tag": "tun-in",
             "address": ["172.19.0.1/30"],
-            "mtu": 9000,
+            // Dual-VPN: high MTU under Kerio causes PMTU blackholes / slow TCP. Karing-class clients stay near Ethernet MTU.
+            "mtu": 1400,
             "auto_route": true,
             // Keep false when Kerio may be present so we don't steal corporate routes.
             "strict_route": false,
@@ -487,11 +489,13 @@ enum SingBoxConfigBuilder {
             route["auto_detect_interface"] = true
         }
 
+        // Karing FakeIP model: intercept DNS → fake IP locally; real resolve happens on the proxy node.
+        // Do NOT detour residual DNS through the proxy (double-hop DNS kills throughput).
         let root: [String: Any] = [
             "log": ["level": "warn", "timestamp": true],
             "dns": [
                 "servers": [
-                    ["tag": "remote", "address": "8.8.8.8", "detour": "proxy"],
+                    ["tag": "remote", "address": "8.8.8.8", "detour": "direct"],
                     ["tag": "local", "address": "local", "detour": "direct"],
                     ["tag": "fakeip", "address": "fakeip"]
                 ],
@@ -641,11 +645,14 @@ enum SingBoxConfigBuilder {
             out["transport"] = transport
         }
         let transportType = (query["type"] ?? query["net"] ?? "tcp").lowercased()
-        if flow.isEmpty, transportType == "ws" || transportType == "websocket" || transportType == "grpc" {
+        // Mux only when the link explicitly asks (Karing: requires server support; wrong mux tanks speed).
+        let muxFlag = (query["mux"] ?? query["multiplex"] ?? "").lowercased()
+        let wantsMux = muxFlag == "1" || muxFlag == "true" || muxFlag == "yes"
+        if wantsMux, flow.isEmpty, transportType == "ws" || transportType == "websocket" || transportType == "grpc" {
             out["multiplex"] = [
                 "enabled": true,
                 "protocol": "h2mux",
-                "max_connections": 8,
+                "max_connections": 4,
                 "min_streams": 4,
                 "padding": false
             ]
