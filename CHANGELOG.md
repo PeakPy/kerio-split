@@ -5,6 +5,14 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-10-04
+
+### Added
+
+- VPN Routes and Bypass accept **domains** and wildcards (`mail.corp.com`, `*.corp.com`) in addition to IPv4/CIDR
+- Split apply resolves domains to A records and installs host routes via Kerio or LAN
+- Built-in outbound: corporate/bypass domains use local DNS (not FakeIP) and `direct` so Kerio/LAN routing still wins
+
 ## [1.2.9] - 2026-09-22
 
 ### Fixed
@@ -138,7 +146,8 @@ First public release.
 - Non-relocatable install; Connect All resumes after Accessibility is granted
 - Passwordless route helper (one-time install)
 
-[Unreleased]: https://github.com/PeakPy/kerio-split/compare/v1.2.9...HEAD
+[Unreleased]: https://github.com/PeakPy/kerio-split/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/PeakPy/kerio-split/releases/tag/v1.3.0
 [1.2.9]: https://github.com/PeakPy/kerio-split/releases/tag/v1.2.9
 [1.2.8]: https://github.com/PeakPy/kerio-split/releases/tag/v1.2.8
 [1.2.7]: https://github.com/PeakPy/kerio-split/releases/tag/v1.2.7

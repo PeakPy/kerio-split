@@ -111,7 +111,7 @@ final class TunnelController: ObservableObject {
     var configPathDisplay: String { configURL.path }
 
     var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.2.9"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.3.0"
     }
 
     var menuBarSubtitle: String {
@@ -1482,24 +1482,24 @@ final class TunnelController: ObservableObject {
     }
 
     private func validatedHostOrCIDR(_ raw: String, into existing: [String], dnsOnly: Bool = false) -> String? {
-        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !value.isEmpty else {
-            inputError = "Enter an IP or CIDR"
+            inputError = dnsOnly ? "Enter a DNS IPv4 address" : "Enter an IP, CIDR, or domain"
             return nil
         }
         if dnsOnly {
-            // DNS: host only, no CIDR
+            // DNS: host only, no CIDR / domain
             guard AppConfig.isValidHostOrCIDR(value), !value.contains("/") else {
                 inputError = "DNS must be an IPv4 address (no CIDR)"
                 return nil
             }
         } else {
-            guard AppConfig.isValidHostOrCIDR(value) else {
-                inputError = "Use IPv4 or CIDR, e.g. 192.168.70.0/24"
+            guard AppConfig.isValidRouteTarget(value) else {
+                inputError = "Use IPv4, CIDR, or domain — e.g. 192.168.70.0/24 · mail.corp.com · *.corp.com"
                 return nil
             }
         }
-        guard !existing.contains(value) else {
+        guard !existing.contains(where: { $0.caseInsensitiveCompare(value) == .orderedSame }) else {
             inputError = "Already in the list"
             return nil
         }
@@ -2140,7 +2140,9 @@ final class TunnelController: ObservableObject {
             profile: profile,
             bindInterface: bindIface,
             excludeInterfaces: exclude,
-            kerioCIDRs: config.vpnRoutes
+            kerioCIDRs: AppConfig.ipOrCIDRTargets(from: config.vpnRoutes),
+            kerioDomains: AppConfig.domainTargets(from: config.vpnRoutes),
+            bypassDomains: AppConfig.domainTargets(from: config.bypassRoutes)
         )
         outboundConnected = outboundManager.isConnected
         outboundStatusDetail = outboundManager.statusDetail

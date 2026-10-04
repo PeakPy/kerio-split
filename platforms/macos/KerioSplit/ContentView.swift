@@ -86,7 +86,7 @@ struct ContentView: View {
         case .vpnRoutes:
             routesPage(
                 title: "VPN Routes",
-                subtitle: "Traffic for these destinations goes through Kerio.",
+                subtitle: "IPs, CIDRs, and domains that go through Kerio (e.g. 192.168.70.0/24 · mail.corp.com · *.corp.com).",
                 routes: controller.config.vpnRoutes,
                 draft: $controller.newVpnRoute,
                 onAdd: { controller.addVpnRoute() },
@@ -95,7 +95,7 @@ struct ContentView: View {
         case .bypass:
             routesPage(
                 title: "Bypass (LAN)",
-                subtitle: "These destinations always use your normal gateway.",
+                subtitle: "IPs, CIDRs, and domains that always stay on your normal gateway.",
                 routes: controller.config.bypassRoutes,
                 draft: $controller.newBypassRoute,
                 onAdd: { controller.addBypassRoute() },
@@ -138,7 +138,7 @@ struct ContentView: View {
             SurfaceCard {
                 VStack(alignment: .leading, spacing: 10) {
                     SectionLabel(title: title, subtitle: subtitle)
-                    AddRouteField(placeholder: "192.168.70.0/24 or 10.0.0.5", text: draft, onAdd: onAdd)
+                    AddRouteField(placeholder: "192.168.70.0/24 · 10.0.0.5 · mail.corp.com · *.corp.com", text: draft, onAdd: onAdd)
                     if let err = controller.inputError {
                         Text(err)
                             .font(.system(size: 12, weight: .medium))

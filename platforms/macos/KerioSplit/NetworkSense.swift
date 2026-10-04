@@ -198,7 +198,8 @@ enum NetworkSense {
         let pinGw = pinnedGateway.trimmingCharacters(in: .whitespacesAndNewlines)
 
         // 1) Strongest: routing table maps configured VPN CIDRs → iface/gw
-        if let hit = findIfaceForVPNRoutes(vpnRoutes, routes: routes, ignore: kerioIgnore) {
+        let cidrOnly = vpnRoutes.filter { AppConfig.isValidHostOrCIDR($0) }
+        if let hit = findIfaceForVPNRoutes(cidrOnly, routes: routes, ignore: kerioIgnore) {
             snap.kerioInterface = hit.iface
             snap.kerioGateway = hit.gateway
             snap.managedRoutesPresent = hit.matched
@@ -629,6 +630,11 @@ enum NetworkSense {
         var present: [String] = []
         var missing: [String] = []
         for cidr in vpnRoutes {
+            // Domains are not static routes — skip conflict checks (resolved on apply / outbound).
+            if AppConfig.isDomainTarget(cidr) {
+                present.append(cidr)
+                continue
+            }
             if routeTableContains(cidr, routes: routes) {
                 present.append(cidr)
             } else {

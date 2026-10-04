@@ -156,21 +156,32 @@ struct RouteRow: View {
     let route: String
     let onDelete: () -> Void
 
+    private var kindLabel: String {
+        if AppConfig.isDomainTarget(route) { return "domain" }
+        if route.contains("/") { return "cidr" }
+        return "ip"
+    }
+
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: "circle.grid.cross")
+            Image(systemName: AppConfig.isDomainTarget(route) ? "globe" : "circle.grid.cross")
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(Brand.primary)
                 .frame(width: 26, height: 26)
                 .background(Circle().fill(Brand.primary.opacity(0.12)))
 
-            Text(route)
-                .font(.system(size: 13, weight: .medium, design: .monospaced))
-                .foregroundStyle(Brand.ink)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(route)
+                    .font(.system(size: 13, weight: .medium, design: .monospaced))
+                    .foregroundStyle(Brand.ink)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+                Text(kindLabel.uppercased())
+                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                    .foregroundStyle(Brand.muted)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             Button(role: .destructive, action: onDelete) {
                 Image(systemName: "trash")

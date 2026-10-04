@@ -155,7 +155,9 @@ final class OutboundManager: ObservableObject {
         profile: OutboundProfile,
         bindInterface: String = "",
         excludeInterfaces: [String] = [],
-        kerioCIDRs: [String] = []
+        kerioCIDRs: [String] = [],
+        kerioDomains: [String] = [],
+        bypassDomains: [String] = []
     ) async -> Bool {
         refreshBinary()
         guard let bin = binaryPath else {
@@ -170,7 +172,9 @@ final class OutboundManager: ObservableObject {
                 shareLink: profile.shareLink,
                 bindInterface: bindInterface,
                 excludeInterfaces: excludeInterfaces,
-                kerioCIDRs: kerioCIDRs
+                kerioCIDRs: kerioCIDRs,
+                kerioDomains: kerioDomains,
+                bypassDomains: bypassDomains
             )
             try json.write(to: configURL, atomically: true, encoding: .utf8)
             await stopAll()
@@ -424,7 +428,9 @@ enum SingBoxConfigBuilder {
         shareLink: String,
         bindInterface: String = "",
         excludeInterfaces: [String] = [],
-        kerioCIDRs: [String] = []
+        kerioCIDRs: [String] = [],
+        kerioDomains: [String] = [],
+        bypassDomains: [String] = []
     ) throws -> String {
         var outbound = try outboundObject(from: shareLink)
         let lan = Self.physicalLAN(bindInterface)
@@ -453,33 +459,45 @@ enum SingBoxConfigBuilder {
         if !excludes.isEmpty {
             tunInbound["exclude_interface"] = excludes
         }
-        // Never let sing-box auto_route claim Kerio corporate CIDRs.
+        // Never let sing-box auto_route claim Kerio corporate CIDRs (IPs only).
         let excludeAddrs = kerioCIDRs
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
+            .filter { !$0.isEmpty && AppConfig.isValidHostOrCIDR($0) }
         if !excludeAddrs.isEmpty {
             tunInbound["route_exclude_address"] = excludeAddrs
         }
 
+        let kerioDomainSuffixes = Self.normalizedDomainSuffixes(kerioDomains)
+        let bypassDomainSuffixes = Self.normalizedDomainSuffixes(bypassDomains)
+        let directDomainSuffixes = Array(Set(kerioDomainSuffixes + bypassDomainSuffixes)).sorted()
+
         // Order matters: FakeIP (198.18/15) is "private-looking" but MUST go to proxy.
-        // Real LAN / Kerio RFC1918 stays on system table (Kerio utun wins for corporate).
-        var route: [String: Any] = [
-            "rules": [
-                ["action": "sniff", "timeout": "50ms"],
-                ["protocol": "dns", "action": "hijack-dns"],
-                ["ip_cidr": ["198.18.0.0/15"], "outbound": "proxy"],
-                [
-                        "ip_cidr": [
-                        "10.0.0.0/8",
-                        // Skip 172.19.0.0/30 (our TUN) — keep rest of 172.16/12 for Kerio/LAN.
-                        "172.16.0.0/12",
-                        "192.168.0.0/16",
-                        "127.0.0.0/8",
-                        "169.254.0.0/16"
-                    ],
-                    "outbound": "direct"
-                ]
+        // Corporate / bypass domains → direct (system table: Kerio or LAN).
+        var routeRules: [[String: Any]] = [
+            ["action": "sniff", "timeout": "50ms"],
+            ["protocol": "dns", "action": "hijack-dns"]
+        ]
+        if !directDomainSuffixes.isEmpty {
+            routeRules.append([
+                "domain_suffix": directDomainSuffixes,
+                "outbound": "direct"
+            ])
+        }
+        routeRules.append(["ip_cidr": ["198.18.0.0/15"], "outbound": "proxy"])
+        routeRules.append([
+            "ip_cidr": [
+                "10.0.0.0/8",
+                // Skip 172.19.0.0/30 (our TUN) — keep rest of 172.16/12 for Kerio/LAN.
+                "172.16.0.0/12",
+                "192.168.0.0/16",
+                "127.0.0.0/8",
+                "169.254.0.0/16"
             ],
+            "outbound": "direct"
+        ])
+
+        var route: [String: Any] = [
+            "rules": routeRules,
             "final": "proxy"
         ]
         if !lan.isEmpty {
@@ -488,6 +506,19 @@ enum SingBoxConfigBuilder {
         } else {
             route["auto_detect_interface"] = true
         }
+
+        var dnsRules: [[String: Any]] = [
+            // Resolve proxy server hostname on LAN DNS — not through Kerio/proxy loop.
+            ["outbound": "any", "server": "local"]
+        ]
+        // Corporate / bypass domains: real local DNS (not FakeIP) so Kerio/LAN routes can match.
+        if !directDomainSuffixes.isEmpty {
+            dnsRules.append([
+                "domain_suffix": directDomainSuffixes,
+                "server": "local"
+            ])
+        }
+        dnsRules.append(["query_type": ["A", "AAAA"], "server": "fakeip"])
 
         // Karing FakeIP model: intercept DNS → fake IP locally; real resolve happens on the proxy node.
         // Do NOT detour residual DNS through the proxy (double-hop DNS kills throughput).
@@ -499,11 +530,7 @@ enum SingBoxConfigBuilder {
                     ["tag": "local", "address": "local", "detour": "direct"],
                     ["tag": "fakeip", "address": "fakeip"]
                 ],
-                "rules": [
-                    // Resolve proxy server hostname on LAN DNS — not through Kerio/proxy loop.
-                    ["outbound": "any", "server": "local"],
-                    ["query_type": ["A", "AAAA"], "server": "fakeip"]
-                ],
+                "rules": dnsRules,
                 "fakeip": [
                     "enabled": true,
                     "inet4_range": "198.18.0.0/15"
@@ -528,6 +555,19 @@ enum SingBoxConfigBuilder {
             throw NSError(domain: "KerioSplit", code: 4, userInfo: [NSLocalizedDescriptionKey: "Failed to encode sing-box config"])
         }
         return text
+    }
+
+    private static func normalizedDomainSuffixes(_ domains: [String]) -> [String] {
+        var seen = Set<String>()
+        var out: [String] = []
+        for raw in domains {
+            let s = AppConfig.domainSuffix(for: raw)
+            guard AppConfig.isValidDomain(s) || AppConfig.isValidDomain("*." + s) else { continue }
+            guard !s.isEmpty, !seen.contains(s) else { continue }
+            seen.insert(s)
+            out.append(s)
+        }
+        return out
     }
 
     /// Only physical Ethernet/Wi-Fi — never a utun (Kerio or outbound).

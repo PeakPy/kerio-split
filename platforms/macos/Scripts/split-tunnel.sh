@@ -139,6 +139,132 @@ is_cidr_or_ip() {
   [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]+)?$ ]]
 }
 
+# Domain / FQDN / wildcard suffix (*.corp.example) — not an IP/CIDR.
+is_domain() {
+  local d="$1"
+  is_cidr_or_ip "$d" && return 1
+  [[ "$d" =~ ^(\*\.)?[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]
+}
+
+# Resolve A records for a domain (wildcard → apex). Empty on failure.
+resolve_domain_ips() {
+  local raw="$1" d ips
+  d="${raw#\*.}"
+  d="${d%.}"
+  [[ -n "$d" ]] || return 1
+  ips=""
+  if command -v dig >/dev/null 2>&1; then
+    ips="$(dig +short A "$d" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || true)"
+  fi
+  if [[ -z "$ips" ]] && command -v host >/dev/null 2>&1; then
+    ips="$(host -t A "$d" 2>/dev/null | awk '/has address/{print $NF}' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || true)"
+  fi
+  if [[ -z "$ips" ]]; then
+    ips="$(dscacheutil -q host -a name "$d" 2>/dev/null | awk '/ip_address:/{print $2}' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || true)"
+  fi
+  [[ -n "$ips" ]] || return 1
+  printf '%s\n' $ips
+}
+
+add_host_route() {
+  local mode="$1" ip="$2" gw="$3" ifc="$4" lan_gw="$5"
+  route -n delete -host "$ip" >/dev/null 2>&1 || true
+  if [[ "$mode" == vpn ]]; then
+    route -n add -host "$ip" "$gw" >/dev/null 2>&1 || route -n add -host "$ip" -interface "$ifc" >/dev/null 2>&1 || return 1
+  else
+    [[ -n "$lan_gw" ]] || return 1
+    route -n add -host "$ip" "$lan_gw" >/dev/null 2>&1 || return 1
+  fi
+  return 0
+}
+
+add_route_list() {
+  local mode="$1" gw="$2" ifc="$3"  # mode: vpn|bypass
+  local t lan_gw ip resolved
+  lan_gw="$(lan_default_gateway || true)"
+  while IFS= read -r t; do
+    [[ -z "$t" ]] && continue
+    if is_cidr_or_ip "$t"; then
+      if [[ "$t" == */* ]]; then
+        route -n delete -net "$t" >/dev/null 2>&1 || true
+        if [[ "$mode" == vpn ]]; then
+          route -n add -net "$t" "$gw" >/dev/null 2>&1 || route -n add -net "$t" -interface "$ifc" >/dev/null 2>&1 || die "failed net $t"
+          log "VPN  $t"
+        else
+          [[ -n "$lan_gw" ]] || die "no LAN gateway for bypass"
+          route -n add -net "$t" "$lan_gw" >/dev/null 2>&1 || die "failed bypass net $t"
+          log "BYPASS $t → $lan_gw"
+        fi
+      else
+        if add_host_route "$mode" "$t" "$gw" "$ifc" "$lan_gw"; then
+          if [[ "$mode" == vpn ]]; then log "VPN  $t"; else log "BYPASS $t → $lan_gw"; fi
+        else
+          die "failed host $t"
+        fi
+      fi
+      continue
+    fi
+
+    if is_domain "$t"; then
+      resolved="$(resolve_domain_ips "$t" || true)"
+      if [[ -z "$resolved" ]]; then
+        log "domain $t — no A record yet (outbound/DNS will still match suffix)"
+        continue
+      fi
+      for ip in $resolved; do
+        if add_host_route "$mode" "$ip" "$gw" "$ifc" "$lan_gw"; then
+          if [[ "$mode" == vpn ]]; then
+            log "VPN  $t → $ip"
+          else
+            log "BYPASS $t → $ip via $lan_gw"
+          fi
+        else
+          log "skip failed host $ip ($t)"
+        fi
+      done
+      # Persist for restore cleanup
+      {
+        echo "RESOLVED_${mode}_$(echo "$t" | tr -c 'A-Za-z0-9._-' '_')='$(echo "$resolved" | tr '\n' ' ' | sed 's/[[:space:]]*$//')'"
+      } >> "$STATE_FILE" 2>/dev/null || true
+      continue
+    fi
+
+    log "skip invalid: $t"
+  done
+}
+
+remove_route_list() {
+  local t ip key saved
+  while IFS= read -r t; do
+    [[ -z "$t" ]] && continue
+    if is_cidr_or_ip "$t"; then
+      if [[ "$t" == */* ]]; then
+        route -n delete -net "$t" >/dev/null 2>&1 || true
+      else
+        route -n delete -host "$t" >/dev/null 2>&1 || true
+      fi
+      log "removed $t"
+      continue
+    fi
+    if is_domain "$t"; then
+      key="$(echo "$t" | tr -c 'A-Za-z0-9._-' '_')"
+      saved="$(state_get "RESOLVED_vpn_${key}")"
+      [[ -z "$saved" ]] && saved="$(state_get "RESOLVED_bypass_${key}")"
+      if [[ -z "$saved" ]]; then
+        saved="$(resolve_domain_ips "$t" 2>/dev/null | tr '\n' ' ' || true)"
+      fi
+      for ip in $saved; do
+        [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
+        route -n delete -host "$ip" >/dev/null 2>&1 || true
+      done
+      log "removed domain $t"
+      continue
+    fi
+    route -n delete -host "$t" >/dev/null 2>&1 || true
+    log "removed $t"
+  done
+}
+
 read_vpn_routes() {
   if [[ -n "${CONFIG_FILE:-}" && -f "$CONFIG_FILE" ]]; then
     local list
@@ -358,50 +484,6 @@ apply_dns() {
     networksetup -setdnsservers "$svc" $cleaned 2>/dev/null || true
     log "DNS on $svc → $cleaned"
   fi
-}
-
-add_route_list() {
-  local mode="$1" gw="$2" ifc="$3"  # mode: vpn|bypass
-  local t lan_gw
-  lan_gw="$(lan_default_gateway || true)"
-  while IFS= read -r t; do
-    [[ -z "$t" ]] && continue
-    is_cidr_or_ip "$t" || { log "skip invalid: $t"; continue; }
-    if [[ "$t" == */* ]]; then
-      route -n delete -net "$t" >/dev/null 2>&1 || true
-      if [[ "$mode" == vpn ]]; then
-        route -n add -net "$t" "$gw" >/dev/null 2>&1 || route -n add -net "$t" -interface "$ifc" >/dev/null 2>&1 || die "failed net $t"
-        log "VPN  $t"
-      else
-        [[ -n "$lan_gw" ]] || die "no LAN gateway for bypass"
-        route -n add -net "$t" "$lan_gw" >/dev/null 2>&1 || die "failed bypass net $t"
-        log "BYPASS $t → $lan_gw"
-      fi
-    else
-      route -n delete -host "$t" >/dev/null 2>&1 || true
-      if [[ "$mode" == vpn ]]; then
-        route -n add -host "$t" "$gw" >/dev/null 2>&1 || route -n add -host "$t" -interface "$ifc" >/dev/null 2>&1 || die "failed host $t"
-        log "VPN  $t"
-      else
-        [[ -n "$lan_gw" ]] || die "no LAN gateway for bypass"
-        route -n add -host "$t" "$lan_gw" >/dev/null 2>&1 || die "failed bypass host $t"
-        log "BYPASS $t → $lan_gw"
-      fi
-    fi
-  done
-}
-
-remove_route_list() {
-  local t
-  while IFS= read -r t; do
-    [[ -z "$t" ]] && continue
-    if [[ "$t" == */* ]]; then
-      route -n delete -net "$t" >/dev/null 2>&1 || true
-    else
-      route -n delete -host "$t" >/dev/null 2>&1 || true
-    fi
-    log "removed $t"
-  done
 }
 
 cmd_capture() { save_before_state; }

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, List, Optional
@@ -9,6 +10,12 @@ from typing import Any, List, Optional
 
 class ConfigError(ValueError):
     pass
+
+
+_DOMAIN_RE = re.compile(
+    r"^(\*\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -52,7 +59,7 @@ class SplitConfig:
         if not self.vpn_routes and not self.bypass_routes:
             raise ConfigError("vpnRoutes and bypassRoutes are both empty")
         for item in self.vpn_routes + self.bypass_routes:
-            _parse_host_or_cidr(item)
+            _parse_route_target(item)
 
 
 def _normalize_routes(items: Any) -> List[str]:
@@ -67,11 +74,20 @@ def _normalize_routes(items: Any) -> List[str]:
     return out
 
 
-def _parse_host_or_cidr(value: str) -> None:
-    try:
-        if "/" in value:
-            ipaddress.ip_network(value, strict=False)
-        else:
-            ipaddress.ip_address(value)
-    except ValueError as exc:
-        raise ConfigError(f"invalid host/CIDR: {value}") from exc
+def _looks_like_ip_or_cidr(value: str) -> bool:
+    return bool(re.match(r"^\d{1,3}(\.\d{1,3}){3}(/\d{1,2})?$", value))
+
+
+def _parse_route_target(value: str) -> None:
+    if _looks_like_ip_or_cidr(value) or "/" in value:
+        try:
+            if "/" in value:
+                ipaddress.ip_network(value, strict=False)
+            else:
+                ipaddress.ip_address(value)
+        except ValueError as exc:
+            raise ConfigError(f"invalid host/CIDR: {value}") from exc
+        return
+    if _DOMAIN_RE.match(value) and "://" not in value and " " not in value:
+        return
+    raise ConfigError(f"invalid route target (IP/CIDR/domain): {value}")

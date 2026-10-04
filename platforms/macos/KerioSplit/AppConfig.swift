@@ -243,4 +243,44 @@ struct AppConfig: Codable, Equatable {
         }
         return true
     }
+
+    /// Domain / FQDN / wildcard suffix (`*.corp.example`).
+    static func isValidDomain(_ value: String) -> Bool {
+        var s = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !s.isEmpty, s.count <= 253 else { return false }
+        if s.hasPrefix("*.") {
+            s = String(s.dropFirst(2))
+            guard !s.isEmpty else { return false }
+        }
+        // No scheme, path, port, or spaces.
+        if s.contains("://") || s.contains("/") || s.contains(":") || s.contains(" ") { return false }
+        if isValidHostOrCIDR(s) { return false }
+        // Single label (intranet) or dotted FQDN.
+        let pattern = #"^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$"#
+        return s.range(of: pattern, options: .regularExpression) != nil
+    }
+
+    /// IP, CIDR, or domain — for VPN / Bypass route lists.
+    static func isValidRouteTarget(_ value: String) -> Bool {
+        isValidHostOrCIDR(value) || isValidDomain(value)
+    }
+
+    static func isDomainTarget(_ value: String) -> Bool {
+        isValidDomain(value) && !isValidHostOrCIDR(value)
+    }
+
+    static func ipOrCIDRTargets(from list: [String]) -> [String] {
+        list.filter { isValidHostOrCIDR($0) }
+    }
+
+    static func domainTargets(from list: [String]) -> [String] {
+        list.filter { isDomainTarget($0) }
+    }
+
+    /// Apex / suffix string for sing-box (`*.foo.com` → `foo.com`).
+    static func domainSuffix(for target: String) -> String {
+        let s = target.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if s.hasPrefix("*.") { return String(s.dropFirst(2)) }
+        return s
+    }
 }

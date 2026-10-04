@@ -517,7 +517,7 @@ struct OverviewDashboard: View {
             columns: [GridItem(.adaptive(minimum: 220, maximum: 420), spacing: 10)],
             spacing: 10
         ) {
-            ShortcutTile(title: "VPN Routes", subtitle: "\(controller.config.vpnRoutes.count) via Kerio", icon: "point.3.connected.trianglepath.dotted", action: { onNavigate(.vpnRoutes) })
+            ShortcutTile(title: "VPN Routes", subtitle: "\(controller.config.vpnRoutes.count) IP/CIDR/domain", icon: "point.3.connected.trianglepath.dotted", action: { onNavigate(.vpnRoutes) })
             ShortcutTile(title: "Bypass", subtitle: "\(controller.config.bypassRoutes.count) stay on LAN", icon: "arrow.triangle.branch", action: { onNavigate(.bypass) })
             ShortcutTile(title: "Outbound", subtitle: controller.config.options.outboundMode.title, icon: "arrow.up.right.circle.fill", action: { onNavigate(.outbound) })
             ShortcutTile(title: "Settings", subtitle: "Pin, guard, DNS", icon: "gearshape.fill", action: { onNavigate(.settings) })

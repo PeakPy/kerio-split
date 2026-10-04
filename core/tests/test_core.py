@@ -27,6 +27,26 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaises(ConfigError):
             SplitConfig.load(bad)
 
+    def test_accepts_domain_routes(self):
+        bad = Path("/tmp/keriosplit-domain-config.json")
+        bad.write_text(
+            '{"vpnRoutes":["mail.corp.example","*.corp.example","10.0.0.5"],"bypassRoutes":["cdn.example.com"],"options":{}}',
+            encoding="utf-8",
+        )
+        cfg = SplitConfig.load(bad)
+        self.assertIn("mail.corp.example", cfg.vpn_routes)
+        self.assertIn("*.corp.example", cfg.vpn_routes)
+        self.assertIn("cdn.example.com", cfg.bypass_routes)
+
+    def test_rejects_bad_domain(self):
+        bad = Path("/tmp/keriosplit-bad-domain.json")
+        bad.write_text(
+            '{"vpnRoutes":["http://evil.example/path"],"bypassRoutes":[],"options":{}}',
+            encoding="utf-8",
+        )
+        with self.assertRaises(ConfigError):
+            SplitConfig.load(bad)
+
 
 class DryRunTests(unittest.TestCase):
     def setUp(self):
