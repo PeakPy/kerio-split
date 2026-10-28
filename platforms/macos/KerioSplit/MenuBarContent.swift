@@ -4,6 +4,7 @@ import AppKit
 /// Compact controls in the macOS menu bar (top-right status area).
 struct MenuBarContent: View {
     @ObservedObject var controller: TunnelController
+    @ObservedObject var updater: UpdateManager
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
@@ -42,6 +43,14 @@ struct MenuBarContent: View {
                     controller.openKerioClient()
                 }
                 .disabled(controller.isBusy)
+            }
+
+            if updater.hasUpdate, let r = updater.release {
+                Button("Update available — v\(r.version)") {
+                    NotificationCenter.default.post(name: .kerioSplitNavigate, object: AppSection.settings)
+                    NSApp.activate(ignoringOtherApps: true)
+                    for w in NSApp.windows where w.canBecomeMain { w.makeKeyAndOrderFront(nil) }
+                }
             }
 
             Button("Refresh status") {

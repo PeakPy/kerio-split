@@ -115,6 +115,7 @@ swiftc -parse-as-library \
   "$APP_SRC/MenuBarContent.swift" \
   "$APP_SRC/ResourceMonitor.swift" \
   "$APP_SRC/TunnelController.swift" \
+  "$APP_SRC/UpdateManager.swift" \
   "$APP_SRC/KerioLauncher.swift" \
   "$APP_SRC/KerioClientConfig.swift" \
   "$APP_SRC/StandardVPN.swift" \

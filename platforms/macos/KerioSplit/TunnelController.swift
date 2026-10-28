@@ -111,7 +111,7 @@ final class TunnelController: ObservableObject {
     var configPathDisplay: String { configURL.path }
 
     var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.3.0"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.3.1"
     }
 
     var menuBarSubtitle: String {
@@ -145,6 +145,8 @@ final class TunnelController: ObservableObject {
     private var autoApplyTriggered = false
     private var connectAllTask: DispatchWorkItem?
     private var lastLoggedDiagnosis: String?
+    private var helperProbeInFlight = false
+    private var helperFailStreak = 0
     private var lastNetFingerprint = ""
     /// After Disconnect All, block auto Connect All / auto-apply so we don't bounce back online.
     private var suppressAutoApplyUntil: Date?
@@ -313,11 +315,30 @@ final class TunnelController: ObservableObject {
     }
 
     func refreshHelperStatus(forceLog: Bool = false) {
+        // One probe at a time: slow `sudo` calls must not pile up and race each other.
+        guard !helperProbeInFlight else { return }
+        helperProbeInFlight = true
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            let ready = HelperService.canRunPasswordless()
+            // sudo can be slow (hostname lookup, VPN churn). Retry once before declaring failure.
+            var ready = HelperService.canRunPasswordless()
+            if !ready, HelperService.filesPresent {
+                Thread.sleep(forTimeInterval: 0.5)
+                ready = HelperService.canRunPasswordless()
+            }
             let diagnosis = ready ? "" : HelperService.diagnose()
             DispatchQueue.main.async {
                 guard let self else { return }
+                self.helperProbeInFlight = false
+                // A transient failure while the files are still installed must not flip a working
+                // helper to "Setup needed"; require two consecutive failed probes (or forceLog).
+                if ready {
+                    self.helperFailStreak = 0
+                } else if self.helperReady, HelperService.filesPresent, !forceLog {
+                    self.helperFailStreak += 1
+                    if self.helperFailStreak < 2 { return }
+                } else {
+                    self.helperFailStreak = 0
+                }
                 self.helperReady = ready
                 if ready {
                     self.helperDetail = "Route helper is active. Connect All will not ask for a password."
@@ -386,7 +407,7 @@ final class TunnelController: ObservableObject {
 
     func installHelper() {
         guard !isBusy else { return }
-        setBusy(true)
+        setBusy(true, watchdogSeconds: 300)
         updateStep("allow", .running, "macOS will ask for your password once…")
         pinStatus("Install route helper — enter your Mac password in the system dialog")
         syncScriptsToSupport()
@@ -431,7 +452,7 @@ final class TunnelController: ObservableObject {
 
     func uninstallHelper() {
         guard !isBusy else { return }
-        setBusy(true)
+        setBusy(true, watchdogSeconds: 300)
         Task { @MainActor [weak self] in
             guard let self else { return }
             let result = HelperService.uninstallOnMainThread()

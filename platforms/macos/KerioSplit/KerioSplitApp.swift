@@ -4,6 +4,7 @@ import AppKit
 @main
 struct KerioSplitApp: App {
     @StateObject private var controller = TunnelController()
+    @StateObject private var updater = UpdateManager()
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     /// Local state only — NEVER bind MenuBarExtra.isInserted directly to config+saveConfig
     /// (that causes an infinite SwiftUI update loop / spinning mouse cursor).
@@ -13,9 +14,11 @@ struct KerioSplitApp: App {
         WindowGroup("Kerio Split", id: "main") {
             ContentView()
                 .environmentObject(controller)
+                .environmentObject(updater)
                 .preferredColorScheme(scheme(for: controller.config.appearance))
                 .onAppear {
                     menuBarVisible = controller.config.options.showMenuBar
+                    updater.startAutoChecks()
                 }
                 .onReceive(controller.$config) { cfg in
                     if menuBarVisible != cfg.options.showMenuBar {
@@ -58,7 +61,7 @@ struct KerioSplitApp: App {
         }
 
         MenuBarExtra(isInserted: $menuBarVisible) {
-            MenuBarContent(controller: controller)
+            MenuBarContent(controller: controller, updater: updater)
         } label: {
             // Same logo mark as everywhere else (transparent template, no dark plate).
             Image(nsImage: Brand.menuBarImage)

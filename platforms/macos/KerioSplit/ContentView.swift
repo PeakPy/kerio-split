@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject private var controller: TunnelController
+    @EnvironmentObject private var updater: UpdateManager
     @State private var section: AppSection = .overview
     @State private var routeFilter = ""
 
@@ -200,6 +201,93 @@ struct ContentView: View {
         }
     }
 
+    // MARK: - Updates
+
+    private var updateCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionLabel(
+                title: "App updates",
+                subtitle: "Version \(updater.currentVersion) · checks GitHub Releases"
+                    + (updater.lastChecked.map { " · last checked \($0.formatted(date: .omitted, time: .shortened))" } ?? "")
+            )
+
+            switch updater.phase {
+            case .idle:
+                Text("Not checked yet.").font(.system(size: 12)).foregroundStyle(Brand.muted)
+            case .checking:
+                HStack(spacing: 8) { ProgressView().controlSize(.small); Text("Checking GitHub…").font(.system(size: 12)) }
+            case .upToDate:
+                Label("You're on the latest version", systemImage: "checkmark.seal.fill")
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .foregroundStyle(Brand.success)
+            case .available, .downloading, .readyToInstall, .installing:
+                if let r = updater.release {
+                    Label("Version \(r.version) is available", systemImage: "arrow.down.circle.fill")
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Brand.deep)
+                    if !r.notes.isEmpty {
+                        ScrollView {
+                            Text(r.notes)
+                                .font(.system(size: 11))
+                                .foregroundStyle(Brand.muted)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .textSelection(.enabled)
+                        }
+                        .frame(maxHeight: 110)
+                    }
+                    if updater.phase == .downloading {
+                        ProgressView(value: updater.progress)
+                        Text("Downloading… \(Int(updater.progress * 100))%").font(.system(size: 11)).foregroundStyle(Brand.muted)
+                    } else if updater.phase == .installing {
+                        HStack(spacing: 8) { ProgressView().controlSize(.small); Text("Installing — the app will restart.").font(.system(size: 12)) }
+                    } else if updater.phase == .readyToInstall {
+                        Text("Downloaded and verified. Installing asks for your Mac password once and relaunches the app.")
+                            .font(.system(size: 11)).foregroundStyle(Brand.muted)
+                    }
+                }
+            case .failed(let message):
+                Label(message, systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Brand.warn)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            ButtonRow {
+                switch updater.phase {
+                case .available:
+                    Button("Download update") { updater.download() }
+                        .buttonStyle(.borderedProminent).tint(Brand.deep)
+                    Button("Skip this version") { updater.skipThisVersion() }.buttonStyle(.bordered)
+                case .downloading:
+                    Button("Cancel") { updater.cancelDownload() }.buttonStyle(.bordered)
+                case .readyToInstall:
+                    Button("Install & restart") { updater.install() }
+                        .buttonStyle(.borderedProminent).tint(Brand.deep)
+                case .failed:
+                    if updater.release != nil {
+                        Button("Retry") { updater.dismissError(); updater.phase == .available ? updater.download() : updater.install() }
+                            .buttonStyle(.borderedProminent).tint(Brand.deep)
+                    }
+                    Button("Check again") { updater.dismissError(); updater.check() }.buttonStyle(.bordered)
+                default:
+                    EmptyView()
+                }
+                if !updater.isWorking {
+                    if case .failed = updater.phase {} else {
+                        Button("Check for updates") { updater.check() }.buttonStyle(.bordered)
+                    }
+                }
+                if updater.release != nil {
+                    Button("Release page") { updater.openReleasePage() }.buttonStyle(.bordered)
+                }
+            }
+
+            Toggle("Check automatically", isOn: $updater.autoCheck)
+                .toggleStyle(.switch)
+                .controlSize(.small)
+        }
+    }
+
     // MARK: - Settings
 
     private var settingsPage: some View {
@@ -243,6 +331,10 @@ struct ContentView: View {
                         }
                         .disabled(controller.isBusy)
                     }
+                }
+
+                SurfaceCard {
+                    updateCard
                 }
 
                 SurfaceCard {

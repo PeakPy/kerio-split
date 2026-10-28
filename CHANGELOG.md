@@ -5,6 +5,17 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-10-28
+
+### Added
+
+- In-app updater (Settings → App updates): checks GitHub Releases, downloads `KerioSplit.pkg` with progress and SHA-256 verification, installs with one password prompt and relaunches; optional automatic check every 6h; menu bar shows when an update exists
+
+### Fixed
+
+- Route helper no longer flips to "Setup needed" after a while: slower `sudo` probes are retried, overlapping probes are dropped, and a single transient failure is ignored
+- Install/Remove helper no longer gets cut off by the 20s busy watchdog while the password dialog is open
+
 ## [1.3.0] - 2026-10-04
 
 ### Added

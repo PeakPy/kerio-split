@@ -19,7 +19,7 @@ enum HelperService {
         return runProcess(
             "/usr/bin/sudo",
             ["-n", ctlPath, "ping"],
-            timeoutSeconds: 2
+            timeoutSeconds: 6
         ).ok
     }
 
