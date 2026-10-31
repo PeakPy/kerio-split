@@ -5,6 +5,16 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.3.3] - 2026-10-31
+
+### Fixed
+
+- Connection state no longer flaps (default route, Kerio session, tunnel address) when `netstat`, `ifconfig` or `scutil` answers late or fails: the last good output is reused for up to 10s instead of reading as "nothing connected"
+- One bad network scan could make the route guard think Kerio was gone and turn split OFF; that false trigger is gone
+- Command output is read while the command runs, so large output can no longer stall it until the timeout
+- Connect All no longer clicks the server entry in Kerio's menu while Kerio is already Connected or Connecting (this dropped and re-opened the tunnel)
+- After launch the app no longer shows "connected" for a few seconds from a leftover split marker when no Kerio tunnel is up
+
 ## [1.3.2] - 2026-10-31
 
 ### Added
