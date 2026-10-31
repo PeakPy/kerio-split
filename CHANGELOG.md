@@ -5,6 +5,8 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.3.2] - 2026-10-31
+
 ### Added
 
 - Routing conflicts now resolve themselves: if Kerio disappears (force-quit, crash, network drop) while split is ON, routes and DNS are restored automatically; if the tunnel is alive but routes are missing, only the missing routes are re-added (max 3 attempts, then it stops and shows the conflict)
