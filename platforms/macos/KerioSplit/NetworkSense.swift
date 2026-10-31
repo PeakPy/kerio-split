@@ -174,7 +174,11 @@ enum NetworkSense {
 
         var snap = NetworkSnapshot()
         snap.scannedAt = Date()
-        snap.fullTunnelHijack = routes.contains("0/1") || routes.contains("128.0/1")
+        // Exact destination match: a substring test also hit routes like "10.0/16".
+        snap.fullTunnelHijack = routes.split(separator: "\n").contains { line in
+            guard let dest = line.split(whereSeparator: \.isWhitespace).first else { return false }
+            return dest == "0/1" || dest == "128.0/1"
+        }
         snap.kerioDaemonRunning = box.daemon
 
         let session = parseKerioSession(ncList)
@@ -602,7 +606,7 @@ enum NetworkSense {
             let parts = line.split(whereSeparator: \.isWhitespace).map(String.init)
             guard parts.count >= 4 else { continue }
             let dest = parts[0]
-            guard keys.contains(where: { dest == $0 || dest.hasPrefix($0) }) else { continue }
+            guard keys.contains(dest) else { continue }
             let gw = parts[1]
             let iface = parts.last ?? ""
             if iface.hasPrefix("utun") || iface.hasPrefix("kvnet") || iface.hasPrefix("kerio") || iface.hasPrefix("ipsec") {
@@ -612,18 +616,24 @@ enum NetworkSense {
         return nil
     }
 
+    /// netstat drops trailing zero octets (10.20.0.0/30 → "10.20/30", 127.0.0.0/8 → "127").
     private static func routeKeys(for cidr: String) -> [String] {
-        // netstat shortens 192.168.70.0/24 → 192.168.70
+        let ip: String
+        let prefix: Int
         if let slash = cidr.firstIndex(of: "/") {
-            let ip = String(cidr[..<slash])
-            let prefix = Int(cidr[cidr.index(after: slash)...]) ?? 32
-            let octets = ip.split(separator: ".").map(String.init)
-            guard octets.count == 4 else { return [cidr, ip] }
-            if prefix >= 24 { return [cidr, ip, "\(octets[0]).\(octets[1]).\(octets[2])"] }
-            if prefix >= 16 { return [cidr, ip, "\(octets[0]).\(octets[1])"] }
-            return [cidr, ip, octets[0]]
+            ip = String(cidr[..<slash])
+            prefix = Int(cidr[cidr.index(after: slash)...]) ?? 32
+        } else {
+            ip = cidr
+            prefix = 32
         }
-        return [cidr]
+        var octets = ip.split(separator: ".").map(String.init)
+        guard octets.count == 4 else { return [cidr] }
+        while octets.count > 1, octets.last == "0" { octets.removeLast() }
+        let short = octets.joined(separator: ".")
+        var keys = [cidr, "\(short)/\(prefix)"]
+        if prefix == 32 { keys.append(ip) } else { keys.append(short) }
+        return keys
     }
 
     private static func classifyVPNRoutes(_ vpnRoutes: [String], routes: String) -> (present: [String], missing: [String]) {
@@ -645,7 +655,12 @@ enum NetworkSense {
     }
 
     private static func routeTableContains(_ cidr: String, routes: String) -> Bool {
-        routeHit(for: cidr, routes: routes) != nil || routes.contains(cidr)
+        if routeHit(for: cidr, routes: routes) != nil { return true }
+        let keys = routeKeys(for: cidr)
+        return routes.split(separator: "\n").contains { line in
+            guard let dest = line.split(whereSeparator: \.isWhitespace).first else { return false }
+            return keys.contains(String(dest))
+        }
     }
 
     private static func parseDefaults(routes: String, into snap: inout NetworkSnapshot) {
@@ -754,7 +769,22 @@ enum NetworkSense {
         return ""
     }
 
+    private static let dnsLock = NSLock()
+    nonisolated(unsafe) private static var dnsCache: (at: Date, servers: [String]) = (.distantPast, [])
+
     private static func currentDNS() -> [String] {
+        dnsLock.lock()
+        let cached = dnsCache
+        dnsLock.unlock()
+        if Date().timeIntervalSince(cached.at) < 15 { return cached.servers }
+        let servers = readDNS()
+        dnsLock.lock()
+        dnsCache = (Date(), servers)
+        dnsLock.unlock()
+        return servers
+    }
+
+    private static func readDNS() -> [String] {
         let out = HelperService.runProcess("/usr/sbin/scutil", ["--dns"], timeoutSeconds: 3).text
         var servers: [String] = []
         for line in out.split(separator: "\n") {

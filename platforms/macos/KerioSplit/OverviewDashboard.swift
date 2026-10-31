@@ -168,6 +168,11 @@ struct OverviewDashboard: View {
                         }
                         .controlSize(.small)
                     }
+                } else if controller.sessionPhase == .connecting {
+                    Button("Cancel connecting") { controller.cancelConnectAll() }
+                        .buttonStyle(.bordered)
+                        .tint(.white)
+                        .controlSize(.small)
                 }
 
                 DualActionBar(

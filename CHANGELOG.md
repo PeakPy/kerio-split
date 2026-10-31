@@ -5,6 +5,26 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Routing conflicts now resolve themselves: if Kerio disappears (force-quit, crash, network drop) while split is ON, routes and DNS are restored automatically; if the tunnel is alive but routes are missing, only the missing routes are re-added (max 3 attempts, then it stops and shows the conflict)
+- "Cancel connecting" button on the Overview hero while Connect All is running
+
+### Changed
+
+- Connect All gives up after 3 Connect clicks (7s apart) and tells the user the problem is on the Kerio side, instead of retrying for 90s; wait window is 60s
+- Faster Connect All: tunnel polling every ~0.35s, apply retries every 0.6s, `scutil --dns` cached for 15s
+
+### Fixed
+
+- A failed `apply` was reported as success because its output mentions "hijack"; only the real success marker counts now
+- `0/1` hijack detection matched unrelated routes such as `10.0/16`; route presence checks used prefix matching (`10.1` matched `10.10/16`) — both now compare exact destinations
+- Route guard never recognised `/16`, `/8`, `/30` routes (netstat shortens them) and re-added all routes every tick; it now re-adds only the missing ones and ignores domains
+- Restore now puts DNS back (previously left on the custom/VPN servers after Disconnect or a Kerio crash)
+- Restore/apply used a stale saved LAN gateway after switching Wi-Fi; the live gateway wins and the snapshot is re-captured when split is not applied
+- Resolved domain IPs were dropped from state on every apply, so Restore could miss host routes
+- App re-pins to the new utun/gateway when Kerio reconnects on a different interface
+
 ## [1.3.1] - 2026-10-28
 
 ### Added

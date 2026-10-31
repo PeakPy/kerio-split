@@ -416,7 +416,9 @@ EOF
 }
 
 ensure_state() {
-  if [[ -f "$STATE_FILE" ]] && grep -q "^BEFORE_DEFAULT_GW='" "$STATE_FILE" 2>/dev/null; then
+  # Only trust the saved snapshot while split is applied; otherwise the network may have changed.
+  if [[ -f "$STATE_FILE" ]] && grep -q "^APPLIED_AT=" "$STATE_FILE" 2>/dev/null \
+     && grep -q "^BEFORE_DEFAULT_GW='" "$STATE_FILE" 2>/dev/null; then
     load_state
     [[ -n "$BEFORE_DEFAULT_GW" ]] && return 0
   fi
@@ -442,8 +444,10 @@ delete_full_tunnel_hijack() {
 
 restore_lan_default() {
   load_state
-  local gw="${BEFORE_DEFAULT_GW:-}"
-  gw="${gw:-$(lan_default_gateway || true)}"
+  # The live LAN gateway wins: a saved one goes stale after switching Wi-Fi / hotspot.
+  local gw
+  gw="$(lan_default_gateway || true)"
+  gw="${gw:-${BEFORE_DEFAULT_GW:-}}"
   [[ -n "$gw" ]] || die "cannot find LAN gateway"
   if ! netstat -rn -f inet | awk -v g="$gw" '$1=="default" && $2==g && $4 ~ /^en/ { found=1 } END{ exit !found }'; then
     route -n add default "$gw" 2>/dev/null || route -n change default "$gw" 2>/dev/null || true
@@ -468,7 +472,13 @@ apply_dns() {
     return 0
   fi
 
-  local dns="${BEFORE_DNS:-}" cleaned="" ip
+  restore_saved_dns "$svc"
+}
+
+# Put the DNS servers captured before the first apply back on the service (DHCP when empty).
+restore_saved_dns() {
+  local svc="$1" dns="${BEFORE_DNS:-}" cleaned="" ip
+  [[ -n "$svc" ]] || return 0
   for ip in $dns; do
     case "$ip" in
       There|aren\'t|any|DNS|Servers|set|on*|172.16.*) continue ;;
@@ -526,12 +536,14 @@ cmd_apply() {
 
   # Clear previous managed routes then re-add
   remove_route_list < <(read_vpn_routes; read_bypass_routes) || true
+  grep -v -E "^RESOLVED_" "$STATE_FILE" > "${STATE_FILE}.tmp" 2>/dev/null || true
+  mv "${STATE_FILE}.tmp" "$STATE_FILE"
   add_route_list vpn "$vpn_gw" "$vpn_if" < <(read_vpn_routes)
   add_route_list bypass "$vpn_gw" "$vpn_if" < <(read_bypass_routes)
 
   local stamp
   stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  grep -E "^BEFORE_|^SAVED_AT=" "$STATE_FILE" > "${STATE_FILE}.tmp" || true
+  grep -E "^BEFORE_|^SAVED_AT=|^RESOLVED_" "$STATE_FILE" > "${STATE_FILE}.tmp" || true
   {
     echo "VPN_IF='${vpn_if}'"
     echo "VPN_GW='${vpn_gw}'"
@@ -552,8 +564,16 @@ cmd_restore() {
   need_root
   remove_route_list < <(read_vpn_routes; read_bypass_routes) || true
   load_state
-  if [[ -n "${BEFORE_DEFAULT_GW:-}" ]]; then
-    route -n add default "$BEFORE_DEFAULT_GW" 2>/dev/null || true
+  local was_applied=0
+  grep -q "^APPLIED_AT=" "$STATE_FILE" 2>/dev/null && was_applied=1
+  local live_gw
+  live_gw="$(lan_default_gateway || true)"
+  live_gw="${live_gw:-${BEFORE_DEFAULT_GW:-}}"
+  if [[ -n "$live_gw" ]] && ! netstat -rn -f inet 2>/dev/null | awk -v g="$live_gw" '$1=="default" && $2==g && $4 ~ /^en/ { f=1 } END{ exit !f }'; then
+    route -n add default "$live_gw" >/dev/null 2>&1 || route -n change default "$live_gw" >/dev/null 2>&1 || true
+  fi
+  if [[ "$was_applied" -eq 1 && "$(json_opt_bool restoreLanDns true)" == "true" && -n "${BEFORE_DNS_SERVICE:-}" ]]; then
+    restore_saved_dns "$BEFORE_DNS_SERVICE"
   fi
   # Clear applied marker so the app no longer thinks split is ON.
   if [[ -f "$STATE_FILE" ]]; then
@@ -562,6 +582,19 @@ cmd_restore() {
     [[ -n "${SUDO_USER:-}" ]] && chown "${SUDO_USER}" "$STATE_FILE" 2>/dev/null || true
   fi
   log "managed routes removed"
+}
+
+# netstat prints destinations shortened (192.168.70.0/24 → 192.168.70/24); compare exactly.
+route_in_table() {
+  local t="$1" ip pfx short
+  ip="${t%%/*}"
+  pfx=32
+  [[ "$t" == */* ]] && pfx="${t##*/}"
+  # netstat drops trailing zero octets: 10.20.0.0/30 → "10.20/30", 127.0.0.0/8 → "127".
+  short="$ip"
+  while [[ "$short" == *.0 ]]; do short="${short%.0}"; done
+  netstat -rn -f inet 2>/dev/null | awk -v k1="$short/$pfx" -v k2="$t" -v k3="$ip" -v k4="$short" -v p="$pfx" \
+    '$1==k1 || $1==k2 || ($1==k3 && p==32) || ($1==k4 && p<32) { f=1 } END{ exit !f }'
 }
 
 # Re-assert vpnRoutes only (no DNS/default churn). Used by route guard.
@@ -575,23 +608,21 @@ cmd_guard() {
   vpn_gw="$(detect_vpn_gateway || true)"
   [[ -n "$vpn_if" && -n "$vpn_gw" ]] || die "Kerio tunnel not found for guard"
 
-  local t missing=0
+  local t missing_list=""
   while IFS= read -r t; do
     [[ -z "$t" ]] && continue
-    if ! netstat -rn -f inet 2>/dev/null | awk -v d="$t" 'index($1,d)==1 || $1==d { found=1 } END{ exit !found }'; then
-      missing=1
-      break
-    fi
+    is_cidr_or_ip "$t" || continue
+    route_in_table "$t" || missing_list+="${t}"$'\n'
   done < <(read_vpn_routes)
 
-  if [[ "$missing" -eq 0 ]]; then
+  if [[ -z "$missing_list" ]]; then
     log "guard: vpn routes OK"
     echo "guard=ok"
     return 0
   fi
 
-  log "guard: re-adding vpn routes via $vpn_if ($vpn_gw)"
-  add_route_list vpn "$vpn_gw" "$vpn_if" < <(read_vpn_routes)
+  log "guard: re-adding missing vpn routes via $vpn_if ($vpn_gw)"
+  add_route_list vpn "$vpn_gw" "$vpn_if" < <(printf '%s' "$missing_list")
   echo "guard=repaired iface=$vpn_if gw=$vpn_gw"
 }
 
