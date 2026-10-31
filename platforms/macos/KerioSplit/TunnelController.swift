@@ -1831,7 +1831,8 @@ final class TunnelController: ObservableObject {
 
     func syncTimelineFromReality() {
         guard !isBusy else { return }
-        if isActive {
+        // A leftover APPLIED_AT marker without a live tunnel is not "connected"; route guard restores it.
+        if isActive, kerioTunnelSeen {
             sessionPhase = .connected
             loadConnectedTimeline()
         } else {

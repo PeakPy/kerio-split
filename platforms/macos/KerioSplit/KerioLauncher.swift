@@ -456,7 +456,7 @@ enum KerioLauncher {
                                                     set clickedName to itemName
                                                 end if
                                             else
-                                                if itemName is "Connecting..." or itemName is "Disconnect" or itemName is "Disconnecting..." then
+                                                if itemName ends with "Connecting..." or itemName ends with ": Connected" or itemName is "Connected" or itemName is "Disconnect" or itemName ends with "Disconnecting..." then
                                                     set alreadyName to itemName
                                                 else if itemName is "Connect" and clickedName is "" then
                                                     set clickedName to itemName
@@ -473,7 +473,7 @@ enum KerioLauncher {
                                     set AppleScript's text item delimiters to ","
                                     set seenDump to procName & ":[" & (itemList as text) & "]"
                                     set AppleScript's text item delimiters to ""
-                                    if alreadyName is not "" and clickedName is "" then
+                                    if alreadyName is not "" and (clickedName is "" or wantDisconnect is false) then
                                         try
                                             key code 53
                                         end try

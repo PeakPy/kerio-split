@@ -138,27 +138,49 @@ enum NetworkSense {
         let ignore = Set(ignoreInterfaces.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
 
         // Parallel probes — sequential netstat/ifconfig/scutil made every refresh feel laggy.
+        // Probes that fail or finish late stay nil instead of reading as "no route / no session".
         final class ProbeBox: @unchecked Sendable {
-            var routes = ""
-            var ifconfig = ""
-            var ncList = ""
-            var daemon = false
+            private let lock = NSLock()
+            private var routesOut: String?
+            private var ifconfigOut: String?
+            private var ncListOut: String?
+            private var daemonUp = false
+
+            var routes: String? {
+                get { lock.lock(); defer { lock.unlock() }; return routesOut }
+                set { lock.lock(); routesOut = newValue; lock.unlock() }
+            }
+            var ifconfig: String? {
+                get { lock.lock(); defer { lock.unlock() }; return ifconfigOut }
+                set { lock.lock(); ifconfigOut = newValue; lock.unlock() }
+            }
+            var ncList: String? {
+                get { lock.lock(); defer { lock.unlock() }; return ncListOut }
+                set { lock.lock(); ncListOut = newValue; lock.unlock() }
+            }
+            var daemon: Bool {
+                get { lock.lock(); defer { lock.unlock() }; return daemonUp }
+                set { lock.lock(); daemonUp = newValue; lock.unlock() }
+            }
         }
         let box = ProbeBox()
         let group = DispatchGroup()
         group.enter()
         DispatchQueue.global(qos: .userInitiated).async {
-            box.routes = HelperService.runProcess("/usr/sbin/netstat", ["-rn", "-f", "inet"], timeoutSeconds: 2).text
+            let r = HelperService.runProcess("/usr/sbin/netstat", ["-rn", "-f", "inet"], timeoutSeconds: 2)
+            if r.ok { box.routes = r.text }
             group.leave()
         }
         group.enter()
         DispatchQueue.global(qos: .userInitiated).async {
-            box.ifconfig = HelperService.runProcess("/sbin/ifconfig", ["-a"], timeoutSeconds: 2).text
+            let r = HelperService.runProcess("/sbin/ifconfig", ["-a"], timeoutSeconds: 2)
+            if r.ok { box.ifconfig = r.text }
             group.leave()
         }
         group.enter()
         DispatchQueue.global(qos: .userInitiated).async {
-            box.ncList = HelperService.runProcess("/usr/sbin/scutil", ["--nc", "list"], timeoutSeconds: 2).text
+            let r = HelperService.runProcess("/usr/sbin/scutil", ["--nc", "list"], timeoutSeconds: 2)
+            if r.ok { box.ncList = r.text }
             group.leave()
         }
         group.enter()
@@ -168,9 +190,9 @@ enum NetworkSense {
         }
         _ = group.wait(timeout: .now() + 2.5)
 
-        let routes = box.routes
-        let ifconfig = box.ifconfig
-        let ncList = box.ncList
+        let routes = probeOutput("routes", fresh: box.routes)
+        let ifconfig = probeOutput("ifconfig", fresh: box.ifconfig)
+        let ncList = probeOutput("ncList", fresh: box.ncList)
 
         var snap = NetworkSnapshot()
         snap.scannedAt = Date()
@@ -765,6 +787,23 @@ enum NetworkSense {
         let parts = ip.split(separator: ".")
         if parts.count == 4 {
             return "\(parts[0]).\(parts[1]).\(parts[2]).1"
+        }
+        return ""
+    }
+
+    private static let probeLock = NSLock()
+    nonisolated(unsafe) private static var lastGoodProbe: [String: (at: Date, text: String)] = [:]
+
+    /// A failed probe reuses its last good output for a few seconds so one slow command cannot flip the state.
+    private static func probeOutput(_ key: String, fresh: String?) -> String {
+        probeLock.lock()
+        defer { probeLock.unlock() }
+        if let fresh {
+            lastGoodProbe[key] = (Date(), fresh)
+            return fresh
+        }
+        if let cached = lastGoodProbe[key], Date().timeIntervalSince(cached.at) < 10 {
+            return cached.text
         }
         return ""
     }

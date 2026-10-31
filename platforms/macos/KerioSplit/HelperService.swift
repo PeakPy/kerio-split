@@ -115,6 +115,15 @@ enum HelperService {
         do {
             try proc.run()
 
+            // Drain the pipe while the process runs: waiting for exit first deadlocks once output fills the pipe buffer.
+            let output = OutputBox()
+            let reader = DispatchGroup()
+            reader.enter()
+            DispatchQueue.global(qos: .userInitiated).async {
+                output.data = pipe.fileHandleForReading.readDataToEndOfFile()
+                reader.leave()
+            }
+
             let group = DispatchGroup()
             group.enter()
             DispatchQueue.global(qos: .userInitiated).async {
@@ -128,12 +137,18 @@ enum HelperService {
                 return (false, "Timed out after \(Int(timeoutSeconds))s")
             }
 
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let text = String(data: data, encoding: .utf8) ?? ""
+            guard reader.wait(timeout: .now() + 1) == .success else {
+                return (false, "Output not closed after exit")
+            }
+            let text = String(data: output.data, encoding: .utf8) ?? ""
             return (proc.terminationStatus == 0, text)
         } catch {
             return (false, error.localizedDescription)
         }
+    }
+
+    private final class OutputBox: @unchecked Sendable {
+        var data = Data()
     }
 
     /// Apple TN2065: use `quoted form of` and `with administrator privileges` (not sudo).
