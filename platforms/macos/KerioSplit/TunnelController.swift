@@ -123,7 +123,7 @@ final class TunnelController: ObservableObject {
     var configPathDisplay: String { configURL.path }
 
     var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.3.3"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.3.4"
     }
 
     var menuBarSubtitle: String {

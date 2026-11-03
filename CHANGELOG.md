@@ -5,6 +5,14 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.3.4] - 2026-11-03
+
+### Fixed
+
+- A slow or timed-out `sudo` probe no longer flips a working route helper to "Setup needed" after an hour or two connected; only missing files or an explicit password demand do
+- "Install route helper" now re-checks the helper first and skips the password dialog when it already works, so it no longer spins and freezes the app
+- At launch the helper state starts from the files on disk, so "Setup needed" no longer flashes and auto-resume / auto-apply on launch work
+
 ## [1.3.3] - 2026-10-31
 
 ### Fixed
