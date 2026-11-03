@@ -15,9 +15,11 @@ final class TunnelController: ObservableObject {
     @Published var config = AppConfig.default
     @Published var jsonText = ""
     @Published var jsonError: String?
-    @Published var helperReady = false
+    /// Optimistic from the files on disk so launch does not flash "Setup needed" and the
+    /// auto-resume / auto-apply checks below see the real state; the async probe corrects it.
+    @Published var helperReady = HelperService.filesPresent
     @Published var helperDetail = "Install the route helper once so Connect All does not ask for a password."
-    @Published var processSteps: [FlowStep] = TunnelController.connectTimeline(helperReady: false)
+    @Published var processSteps: [FlowStep] = TunnelController.connectTimeline(helperReady: HelperService.filesPresent)
     @Published var sessionPhase: SessionPhase = .idle
     @Published var newVpnRoute = ""
     @Published var newBypassRoute = ""
@@ -331,12 +333,15 @@ final class TunnelController: ObservableObject {
         guard !helperProbeInFlight else { return }
         helperProbeInFlight = true
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            // sudo can be slow (hostname lookup, VPN churn). Retry once before declaring failure.
-            var ready = HelperService.canRunPasswordless()
-            if !ready, HelperService.filesPresent {
-                Thread.sleep(forTimeInterval: 0.5)
-                ready = HelperService.canRunPasswordless()
+            // sudo can be slow (hostname lookup, VPN churn). A timeout or odd error is "unknown",
+            // not "helper gone": only missing files or an explicit password demand flip the state.
+            var state = HelperService.probe()
+            if state == .unknown {
+                Thread.sleep(forTimeInterval: 1.0)
+                state = HelperService.probe()
             }
+            let ready = state == .ready
+            let inconclusive = state == .unknown
             let diagnosis = ready ? "" : HelperService.diagnose()
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -345,6 +350,9 @@ final class TunnelController: ObservableObject {
                 // helper to "Setup needed"; require two consecutive failed probes (or forceLog).
                 if ready {
                     self.helperFailStreak = 0
+                } else if inconclusive, self.helperReady, HelperService.filesPresent {
+                    FlightRecorder.log("helper", "probe_inconclusive", [:])
+                    return
                 } else if self.helperReady, HelperService.filesPresent, !forceLog {
                     self.helperFailStreak += 1
                     if self.helperFailStreak < 2 { return }
@@ -438,11 +446,24 @@ final class TunnelController: ObservableObject {
 
         Task { @MainActor [weak self] in
             guard let self else { return }
+            // Already working (the "Setup needed" state was a false reading): no password dialog.
+            let alreadyOK = await Task.detached(priority: .userInitiated) {
+                HelperService.probe() == .ready
+            }.value
+            if alreadyOK {
+                self.setBusy(false)
+                self.helperReady = true
+                self.helperFailStreak = 0
+                self.updateStep("allow", .done, "Passwordless helper verified for \(userName).")
+                self.helperDetail = "Route helper is active. Connect All will not ask for a password."
+                self.pinStatus("Route helper already active")
+                return
+            }
             let result = HelperService.installOnMainThread(
                 scriptPath: installScript.path,
                 userName: userName
             )
-            let ready = result.ok && HelperService.canRunPasswordless()
+            let ready = result.ok && HelperService.probe() == .ready
             self.setBusy(false)
             self.appendLog(result.text.isEmpty ? (result.ok ? "Helper installed" : "Route helper install failed") : result.text)
             self.helperReady = ready
@@ -1260,7 +1281,7 @@ final class TunnelController: ObservableObject {
             recordEvent("Kerio tunnel UP — \(evidence)")
         } else if !snap.hasKerioTunnel && wasSeen {
             kerioDownStreak += 1
-            // Require 3 consecutive downs before treating as real down (scutil flickers).
+            // Require 2 consecutive downs before treating as real down (scutil flickers).
             if kerioDownStreak >= 2 {
                 kerioWasSeen = false
                 kerioDownStreak = 0

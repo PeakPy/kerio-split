@@ -23,6 +23,22 @@ enum HelperService {
         ).ok
     }
 
+    enum Probe { case ready, notInstalled, passwordRequired, unknown }
+
+    /// Off the main thread. Distinguishes "sudo said no" from "sudo was slow / errored":
+    /// a timeout during VPN churn must not look like a missing helper.
+    static func probe() -> Probe {
+        guard FileManager.default.isExecutableFile(atPath: ctlPath),
+              FileManager.default.fileExists(atPath: sudoersPath) else { return .notInstalled }
+        let r = runProcess("/usr/bin/sudo", ["-n", ctlPath, "ping"], timeoutSeconds: 10)
+        if r.ok { return .ready }
+        if r.text.contains("password is required") || r.text.contains("a terminal is required")
+            || r.text.contains("not in the sudoers") || r.text.contains("may not run sudo") {
+            return .passwordRequired
+        }
+        return .unknown
+    }
+
     /// Off the main thread. Explains why passwordless sudo is not working.
     static func diagnose() -> String {
         var lines: [String] = []
