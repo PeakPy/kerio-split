@@ -5,6 +5,13 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.3.5] - 2026-11-03
+
+### Fixed
+
+- Connect All now stops at once with "No network connection" when the Mac has no default route and Kerio is not connected, instead of clicking Connect for a minute and sitting in "connecting"
+- A stuck System Events call can no longer freeze the whole app: the Accessibility / Automation permission prompt no longer blocks the main thread from a background connect
+
 ## [1.3.4] - 2026-11-03
 
 ### Fixed

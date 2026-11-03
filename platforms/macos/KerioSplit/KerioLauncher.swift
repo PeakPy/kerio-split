@@ -344,11 +344,10 @@ enum KerioLauncher {
         if Thread.isMainThread {
             return run()
         }
-        var trusted = false
-        DispatchQueue.main.sync {
-            trusted = run()
-        }
-        return trusted
+        // Never block the main thread's owner on a prompt: System Events can be wedged for minutes
+        // (AppleEvent timeouts in the log), and a sync hop here froze the whole UI.
+        DispatchQueue.main.async { _ = run() }
+        return AXIsProcessTrusted()
     }
 
     static func openAccessibilitySettings() {

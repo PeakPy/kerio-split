@@ -123,7 +123,7 @@ final class TunnelController: ObservableObject {
     var configPathDisplay: String { configURL.path }
 
     var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.3.4"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.3.5"
     }
 
     var menuBarSubtitle: String {
@@ -619,6 +619,13 @@ final class TunnelController: ObservableObject {
         guard helperReady else {
             pinStatus("Install the route helper first — that is the only password prompt", seconds: 10)
             updateStep("allow", .failed, "Connect All is locked until the route helper is installed.")
+            return
+        }
+        // No default route and no Kerio session: the Kerio client can only fail ("Unable to resolve
+        // server name"), so say so instead of clicking Connect for a minute and hanging in "connecting".
+        if networkSnapshot.defaultInterface.isEmpty, !kerioSessionConnected, !kerioTunnelSeen {
+            FlightRecorder.log("connect", "no_network", [:])
+            pinStatus("No network connection — join Wi-Fi or Ethernet, then tap Connect All", seconds: 10)
             return
         }
         // Manual / intentional connect clears the post-disconnect suppress window.
