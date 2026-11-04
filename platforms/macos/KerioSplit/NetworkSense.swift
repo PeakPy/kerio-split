@@ -20,6 +20,8 @@ struct NetworkSnapshot: Equatable {
     var conflict: Bool = false
     var conflictDetail: String = ""
     var scannedAt: Date = Date()
+    /// False when `netstat` produced nothing (probe failed): an empty default route then means "unknown", not "offline".
+    var routesKnown: Bool = false
 
     /// Official Kerio NE session reported Connected by scutil.
     var kerioSessionConnected: Bool = false
@@ -190,12 +192,16 @@ enum NetworkSense {
         }
         _ = group.wait(timeout: .now() + 2.5)
 
+        if box.routes == nil, box.ifconfig == nil, box.ncList == nil {
+            logBlindScan()
+        }
         let routes = probeOutput("routes", fresh: box.routes)
         let ifconfig = probeOutput("ifconfig", fresh: box.ifconfig)
         let ncList = probeOutput("ncList", fresh: box.ncList)
 
         var snap = NetworkSnapshot()
         snap.scannedAt = Date()
+        snap.routesKnown = !routes.isEmpty
         // Exact destination match: a substring test also hit routes like "10.0/16".
         snap.fullTunnelHijack = routes.split(separator: "\n").contains { line in
             guard let dest = line.split(whereSeparator: \.isWhitespace).first else { return false }
@@ -806,6 +812,21 @@ enum NetworkSense {
             return cached.text
         }
         return ""
+    }
+
+    nonisolated(unsafe) private static var lastBlindLog = Date.distantPast
+
+    /// Every probe failed at once: record fds / threads so a resource leak shows up in the log.
+    private static func logBlindScan() {
+        probeLock.lock()
+        let due = Date().timeIntervalSince(lastBlindLog) >= 60
+        if due { lastBlindLog = Date() }
+        probeLock.unlock()
+        guard due else { return }
+        let fds = (try? FileManager.default.contentsOfDirectory(atPath: "/dev/fd").count) ?? -1
+        FlightRecorder.log("net", "scan_blind", [
+            "openFDs": "\(fds)"
+        ])
     }
 
     private static let dnsLock = NSLock()

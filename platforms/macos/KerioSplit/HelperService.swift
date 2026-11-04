@@ -121,6 +121,8 @@ enum HelperService {
     }
 
     /// Blocking process runner — call only from a background queue.
+    /// Output is collected by a readability handler and exit by a termination handler, so a hung child
+    /// can never park extra GCD threads (a saturated pool made every network probe read "nothing").
     static func runProcess(_ exe: String, _ args: [String], timeoutSeconds: TimeInterval = 30) -> (ok: Bool, text: String) {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: exe)
@@ -128,43 +130,57 @@ enum HelperService {
         let pipe = Pipe()
         proc.standardOutput = pipe
         proc.standardError = pipe
+        proc.standardInput = FileHandle.nullDevice
+
+        let output = OutputBox()
+        let exited = DispatchSemaphore(value: 0)
+        let eof = DispatchSemaphore(value: 0)
+        let reader = pipe.fileHandleForReading
+        reader.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            if chunk.isEmpty {
+                handle.readabilityHandler = nil
+                eof.signal()
+            } else {
+                output.append(chunk)
+            }
+        }
+        proc.terminationHandler = { _ in exited.signal() }
+
+        func cleanup() {
+            reader.readabilityHandler = nil
+            try? reader.close()
+            try? pipe.fileHandleForWriting.close()
+        }
+
         do {
             try proc.run()
-
-            // Drain the pipe while the process runs: waiting for exit first deadlocks once output fills the pipe buffer.
-            let output = OutputBox()
-            let reader = DispatchGroup()
-            reader.enter()
-            DispatchQueue.global(qos: .userInitiated).async {
-                output.data = pipe.fileHandleForReading.readDataToEndOfFile()
-                reader.leave()
-            }
-
-            let group = DispatchGroup()
-            group.enter()
-            DispatchQueue.global(qos: .userInitiated).async {
-                proc.waitUntilExit()
-                group.leave()
-            }
-            let waitResult = group.wait(timeout: .now() + timeoutSeconds)
-            if waitResult == .timedOut {
-                proc.terminate()
-                _ = group.wait(timeout: .now() + 1)
-                return (false, "Timed out after \(Int(timeoutSeconds))s")
-            }
-
-            guard reader.wait(timeout: .now() + 1) == .success else {
-                return (false, "Output not closed after exit")
-            }
-            let text = String(data: output.data, encoding: .utf8) ?? ""
-            return (proc.terminationStatus == 0, text)
         } catch {
+            cleanup()
             return (false, error.localizedDescription)
         }
+        // The child owns the write end now; drop ours so EOF can arrive.
+        try? pipe.fileHandleForWriting.close()
+
+        if exited.wait(timeout: .now() + timeoutSeconds) == .timedOut {
+            proc.terminate()
+            if exited.wait(timeout: .now() + 1) == .timedOut {
+                kill(proc.processIdentifier, SIGKILL)
+                _ = exited.wait(timeout: .now() + 1)
+            }
+            cleanup()
+            return (false, "Timed out after \(Int(timeoutSeconds))s")
+        }
+        _ = eof.wait(timeout: .now() + 1)
+        cleanup()
+        return (proc.terminationStatus == 0, String(data: output.snapshot(), encoding: .utf8) ?? "")
     }
 
     private final class OutputBox: @unchecked Sendable {
-        var data = Data()
+        private let lock = NSLock()
+        private var data = Data()
+        func append(_ chunk: Data) { lock.lock(); data.append(chunk); lock.unlock() }
+        func snapshot() -> Data { lock.lock(); defer { lock.unlock() }; return data }
     }
 
     /// Apple TN2065: use `quoted form of` and `with administrator privileges` (not sudo).

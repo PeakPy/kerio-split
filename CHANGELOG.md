@@ -5,6 +5,19 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.3.7] - 2026-11-04
+
+### Added
+
+- A Kerio tunnel that stays dead for 30s is reconnected automatically (max 3 per hour) after the notification
+- Connect All pressed while the Mac is offline is queued and starts by itself when the network returns
+- `scan_blind` event in the flight log (with open file descriptors) when every network probe fails at once
+
+### Fixed
+
+- External commands (`netstat`, `ifconfig`, `scutil`, `ping`, `sudo`) no longer park extra threads: output and exit are event-driven, hung children are killed after the timeout and their pipes are closed; after hours of uptime every probe could silently read "nothing connected"
+- "No network" is only reported when the route table was actually read; a failed `netstat` now means "unknown", not "offline"
+
 ## [1.3.6] - 2026-11-04
 
 ### Added

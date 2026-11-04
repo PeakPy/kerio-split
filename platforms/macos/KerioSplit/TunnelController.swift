@@ -125,7 +125,7 @@ final class TunnelController: ObservableObject {
     var configPathDisplay: String { configURL.path }
 
     var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.3.6"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.3.7"
     }
 
     var menuBarSubtitle: String {
@@ -169,6 +169,9 @@ final class TunnelController: ObservableObject {
     private var livenessFails = 0
     private var livenessEverOK = false
     private var pendingReconnect = false
+    private var connectWhenOnline = false
+    private var staleSince: Date?
+    private var autoReconnects: [Date] = []
     private var lastCounters: (inPackets: UInt64, outPackets: UInt64)?
     private var inboundFrozenSince: Date?
     private var everInbound = false
@@ -318,6 +321,7 @@ final class TunnelController: ObservableObject {
                 }
                 if tick % 5 == 0 {
                     self.checkTunnelLiveness()
+                    self.autoReconnectIfStale()
                 }
                 // Conflict auto-resolve is cheap (state checks only) and rate-limited inside.
                 self.runRouteGuardIfNeeded()
@@ -640,11 +644,14 @@ final class TunnelController: ObservableObject {
         }
         // No default route and no Kerio session: the Kerio client can only fail ("Unable to resolve
         // server name"), so say so instead of clicking Connect for a minute and hanging in "connecting".
-        if networkSnapshot.defaultInterface.isEmpty, !kerioSessionConnected, !kerioTunnelSeen {
+        if networkSnapshot.routesKnown, networkSnapshot.defaultInterface.isEmpty,
+           !kerioSessionConnected, !kerioTunnelSeen {
             FlightRecorder.log("connect", "no_network", [:])
-            pinStatus("No network connection — join Wi-Fi or Ethernet, then tap Connect All", seconds: 10)
+            connectWhenOnline = true
+            pinStatus("No network — Connect All will start by itself as soon as the Mac is online", seconds: 12)
             return
         }
+        connectWhenOnline = false
         // Manual / intentional connect clears the post-disconnect suppress window.
         suppressAutoApplyUntil = nil
 
@@ -1289,6 +1296,11 @@ final class TunnelController: ObservableObject {
         let wasSeen = kerioWasSeen
         let wasSession = kerioSessionConnected
         networkSnapshot = snap
+        if connectWhenOnline, snap.routesKnown, !snap.defaultInterface.isEmpty, !isBusy {
+            connectWhenOnline = false
+            recordEvent("Network is back — starting the Connect All you asked for")
+            DispatchQueue.main.async { [weak self] in self?.connectAll() }
+        }
         kerioTunnelSeen = snap.hasKerioTunnel
         kerioSessionConnected = snap.kerioSessionConnected
         kerioSessionLabel = snap.kerioSessionLabel
@@ -1947,6 +1959,7 @@ final class TunnelController: ObservableObject {
         if ok {
             livenessFails = 0
             livenessEverOK = true
+            staleSince = nil
             if tunnelHealth == .stale || tunnelHealth == .networkDown {
                 recordEvent("Kerio tunnel answers again")
                 FlightRecorder.log("health", "recovered", [:])
@@ -1959,7 +1972,7 @@ final class TunnelController: ObservableObject {
         }
         livenessFails += 1
         guard livenessEverOK || inboundDead else { return }
-        if networkSnapshot.defaultInterface.isEmpty {
+        if networkSnapshot.routesKnown, networkSnapshot.defaultInterface.isEmpty {
             if livenessFails >= 2, tunnelHealth != .networkDown {
                 tunnelHealth = .networkDown
                 recordEvent("No network — VPN cannot work until the Mac is online")
@@ -1972,6 +1985,7 @@ final class TunnelController: ObservableObject {
         }
         if livenessFails >= 4, tunnelHealth != .stale {
             tunnelHealth = .stale
+            staleSince = Date()
             recordEvent("Kerio says Connected but the tunnel does not answer")
             FlightRecorder.log("health", "stale", [
                 "fails": "\(livenessFails)",
@@ -1988,7 +2002,23 @@ final class TunnelController: ObservableObject {
         }
     }
 
+    /// A dead tunnel that stays dead for 30s is reconnected automatically (max 3 per hour); the
+    /// notification already told the user, and Reconnect stays available for the rest.
+    private func autoReconnectIfStale() {
+        guard tunnelHealth == .stale, let since = staleSince,
+              Date().timeIntervalSince(since) >= 30,
+              !isBusy, !isTearingDown, helperReady else { return }
+        autoReconnects.removeAll { Date().timeIntervalSince($0) > 3600 }
+        guard autoReconnects.count < 3 else { return }
+        autoReconnects.append(Date())
+        staleSince = nil
+        recordEvent("Auto-reconnect: Kerio stayed unresponsive for 30s")
+        notify(title: "Reconnecting Kerio", body: "The tunnel stayed dead, so Kerio Split is reconnecting it.", force: true)
+        reconnect()
+    }
+
     private func resetLiveness() {
+        staleSince = nil
         livenessFails = 0
         livenessEverOK = false
         lastCounters = nil
