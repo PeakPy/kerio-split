@@ -125,7 +125,7 @@ final class TunnelController: ObservableObject {
     var configPathDisplay: String { configURL.path }
 
     var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.3.7"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.3.8"
     }
 
     var menuBarSubtitle: String {
@@ -170,6 +170,10 @@ final class TunnelController: ObservableObject {
     private var livenessEverOK = false
     private var pendingReconnect = false
     private var connectWhenOnline = false
+    private var defaultLostAt: Date?
+    private var flapSuspectSince: Date?
+    private var flapBaselineIn: UInt64 = 0
+    private var grewSinceFlap = false
     private var staleSince: Date?
     private var autoReconnects: [Date] = []
     private var lastCounters: (inPackets: UInt64, outPackets: UInt64)?
@@ -893,9 +897,17 @@ final class TunnelController: ObservableObject {
                     if snap.hasKerioTunnel {
                         self.updateStep("tunnel", .failed, "Session up but no tunnel IPv4 in time.")
                         self.updateStep("split", .failed, "Tap Apply Split once the tunnel address appears.")
-                        self.pinStatus("Kerio session up — tap Apply Split again when the tunnel is ready", seconds: 14)
+                        let kerioSays = KerioLauncher.lastKerioError
+                        self.pinStatus(
+                            kerioSays.isEmpty
+                                ? "Kerio session up — tap Apply Split again when the tunnel is ready"
+                                : "Kerio says “\(kerioSays)” — check the internet or the VPN server, then tap Connect All again",
+                            seconds: 20
+                        )
                     } else {
+                        let kerioSays = KerioLauncher.lastKerioError
                         let reason = Self.timeoutStatus(backend, clicks: clicksUsed, gaveUp: gaveUp)
+                            + (kerioSays.isEmpty ? "" : " Kerio says: \(kerioSays).")
                         self.updateStep("kerio", .failed, reason)
                         self.updateStep("tunnel", .failed, "No tunnel after \(clicksUsed) Connect attempt(s).")
                         self.updateStep("split", .skipped, "Split waits until a VPN tunnel is connected.")
@@ -1296,6 +1308,7 @@ final class TunnelController: ObservableObject {
         let wasSeen = kerioWasSeen
         let wasSession = kerioSessionConnected
         networkSnapshot = snap
+        trackNetworkFlap(snap)
         if connectWhenOnline, snap.routesKnown, !snap.defaultInterface.isEmpty, !isBusy {
             connectWhenOnline = false
             recordEvent("Network is back — starting the Connect All you asked for")
@@ -1932,6 +1945,23 @@ final class TunnelController: ObservableObject {
         }
     }
 
+    /// The default route vanishing and coming back (Wi-Fi blip, DHCP renew) usually kills Kerio's tunnel
+    /// while Kerio keeps saying Connected, so a flap makes the tunnel suspect right away.
+    private func trackNetworkFlap(_ snap: NetworkSnapshot) {
+        guard snap.routesKnown else { return }
+        if snap.defaultInterface.isEmpty {
+            if defaultLostAt == nil { defaultLostAt = Date() }
+            return
+        }
+        guard let lost = defaultLostAt else { return }
+        defaultLostAt = nil
+        guard isActive || kerioSessionConnected || kerioTunnelSeen else { return }
+        flapSuspectSince = Date()
+        flapBaselineIn = lastCounters?.inPackets ?? 0
+        grewSinceFlap = false
+        FlightRecorder.log("health", "network_flap", ["lostSeconds": "\(Int(Date().timeIntervalSince(lost)))"])
+    }
+
     /// ICMP may be filtered, so also watch the interface: packets going out while nothing ever comes
     /// back (after the tunnel had carried inbound traffic) means the tunnel is dead.
     private func trackInbound(_ c: (inPackets: UInt64, outPackets: UInt64)?) {
@@ -1942,6 +1972,7 @@ final class TunnelController: ObservableObject {
             everInbound = c.inPackets > 0
             return
         }
+        if flapSuspectSince != nil, c.inPackets > flapBaselineIn { grewSinceFlap = true }
         if c.inPackets > last.inPackets {
             everInbound = true
             inboundFrozenSince = nil
@@ -1959,6 +1990,7 @@ final class TunnelController: ObservableObject {
         if ok {
             livenessFails = 0
             livenessEverOK = true
+            flapSuspectSince = nil
             staleSince = nil
             if tunnelHealth == .stale || tunnelHealth == .networkDown {
                 recordEvent("Kerio tunnel answers again")
@@ -1971,7 +2003,9 @@ final class TunnelController: ObservableObject {
             return
         }
         livenessFails += 1
-        guard livenessEverOK || inboundDead else { return }
+        if let since = flapSuspectSince, Date().timeIntervalSince(since) > 180 { flapSuspectSince = nil }
+        let flapSuspect = flapSuspectSince.map { !grewSinceFlap && Date().timeIntervalSince($0) >= 15 } ?? false
+        guard livenessEverOK || inboundDead || flapSuspect else { return }
         if networkSnapshot.routesKnown, networkSnapshot.defaultInterface.isEmpty {
             if livenessFails >= 2, tunnelHealth != .networkDown {
                 tunnelHealth = .networkDown
@@ -1983,14 +2017,15 @@ final class TunnelController: ObservableObject {
             }
             return
         }
-        if livenessFails >= 4, tunnelHealth != .stale {
+        if livenessFails >= (flapSuspect ? 2 : 4), tunnelHealth != .stale {
             tunnelHealth = .stale
             staleSince = Date()
             recordEvent("Kerio says Connected but the tunnel does not answer")
             FlightRecorder.log("health", "stale", [
                 "fails": "\(livenessFails)",
                 "pingEverOK": livenessEverOK ? "1" : "0",
-                "inboundDead": inboundDead ? "1" : "0"
+                "inboundDead": inboundDead ? "1" : "0",
+                "afterNetworkFlap": flapSuspect ? "1" : "0"
             ])
             pinStatus("Kerio is not responding — tap Reconnect", seconds: 15)
             notify(
@@ -2018,6 +2053,7 @@ final class TunnelController: ObservableObject {
     }
 
     private func resetLiveness() {
+        flapSuspectSince = nil
         staleSince = nil
         livenessFails = 0
         livenessEverOK = false

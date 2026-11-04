@@ -130,12 +130,16 @@ enum KerioLauncher {
             "menuDump": click.menuDump
         ])
 
+        let kerioError = Self.kerioReportedError(in: click.menuDump)
+        Self.setLastKerioError(kerioError)
+
         switch click.kind {
         case .clicked:
+            let says = kerioError.isEmpty ? "" : " Kerio says: \(kerioError)."
             return BringUpResult(
                 ok: true,
                 needsAccessibility: false,
-                message: "Started official Kerio client (\(opened)); clicked Connect (\(click.detail)). Waiting for tunnel, then split."
+                message: "Started official Kerio client (\(opened)); clicked Connect (\(click.detail)).\(says) Waiting for tunnel, then split."
             )
         case .alreadyActive:
             return BringUpResult(
@@ -599,6 +603,26 @@ enum KerioLauncher {
         value
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
+    }
+
+    private static let kerioErrorLock = NSLock()
+    nonisolated(unsafe) private static var lastKerioErrorText = ""
+
+    /// Last "Error: …" line Kerio's own menu showed ("Unable to resolve server name", "Operation timeout", …).
+    static var lastKerioError: String {
+        kerioErrorLock.lock(); defer { kerioErrorLock.unlock() }
+        return lastKerioErrorText
+    }
+
+    private static func setLastKerioError(_ text: String) {
+        kerioErrorLock.lock(); lastKerioErrorText = text; kerioErrorLock.unlock()
+    }
+
+    private static func kerioReportedError(in dump: String) -> String {
+        guard let range = dump.range(of: "Error: ") else { return "" }
+        let rest = dump[range.upperBound...]
+        let end = rest.firstIndex(where: { $0 == "," || $0 == "]" }) ?? rest.endIndex
+        return String(rest[..<end]).trimmingCharacters(in: .whitespaces)
     }
 
     private static let appleScriptLock = NSLock()

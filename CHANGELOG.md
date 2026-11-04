@@ -5,6 +5,13 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.3.8] - 2026-11-04
+
+### Added
+
+- When Kerio's own menu shows an error ("Unable to resolve server name", "Operation timeout", ...), Kerio Split now shows that text in the status line and the log instead of a generic "did not connect"
+- A short loss of the default route (Wi-Fi blip, DHCP renew) while Kerio is connected makes the tunnel suspect: if nothing comes back through it and pings fail twice, "Kerio not responding" is raised within ~20s instead of ~85s (`network_flap` in the flight log)
+
 ## [1.3.7] - 2026-11-04
 
 ### Added
