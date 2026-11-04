@@ -92,10 +92,16 @@ struct OverviewDashboard: View {
                     statusChip(title: controller.isActive ? "Split ON" : "Split OFF", lit: controller.isActive)
                     statusChip(title: controller.helperReady ? "Helper" : "Setup", lit: controller.helperReady)
                     statusChip(
-                        title: (controller.kerioSessionConnected || controller.kerioTunnelSeen)
-                            ? "Kerio on"
-                            : "Kerio off",
-                        lit: controller.kerioSessionConnected || controller.kerioTunnelSeen
+                        title: controller.tunnelHealth == .stale
+                            ? "Kerio not responding"
+                            : controller.tunnelHealth == .networkDown
+                                ? "No internet"
+                                : (controller.kerioSessionConnected || controller.kerioTunnelSeen)
+                                    ? "Kerio on"
+                                    : "Kerio off",
+                        lit: (controller.kerioSessionConnected || controller.kerioTunnelSeen)
+                            && controller.tunnelHealth != .stale
+                            && controller.tunnelHealth != .networkDown
                     )
                     Spacer(minLength: 0)
                     phaseBadge

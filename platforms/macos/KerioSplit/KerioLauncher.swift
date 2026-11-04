@@ -601,13 +601,45 @@ enum KerioLauncher {
             .replacingOccurrences(of: "\"", with: "\\\"")
     }
 
-    private static func runAppleScript(_ source: String) -> (ok: Bool, text: String) {
-        var error: NSDictionary?
-        let result = NSAppleScript(source: source)?.executeAndReturnError(&error)
-        if let error {
-            let msg = (error["NSAppleScriptErrorMessage"] as? String) ?? "\(error)"
-            return (false, msg)
+    private static let appleScriptLock = NSLock()
+    private static var appleScriptInFlight = false
+
+    /// System Events can wedge while Kerio's service is dead: every event in a long script then waits
+    /// out its own AppleEvent timeout, so one click ran for 20+ minutes in the log. Bound the whole
+    /// call, and refuse to start another while an abandoned one is still stuck.
+    private static func runAppleScript(_ source: String, deadline: TimeInterval = 25) -> (ok: Bool, text: String) {
+        appleScriptLock.lock()
+        if appleScriptInFlight {
+            appleScriptLock.unlock()
+            return (false, "System Events is not responding (previous script still running)")
         }
-        return (true, result?.stringValue ?? "")
+        appleScriptInFlight = true
+        appleScriptLock.unlock()
+
+        let box = ScriptResultBox()
+        let done = DispatchSemaphore(value: 0)
+        let wrapped = "with timeout of 8 seconds\n\(source)\nend timeout"
+        DispatchQueue.global(qos: .userInitiated).async {
+            var error: NSDictionary?
+            let result = NSAppleScript(source: wrapped)?.executeAndReturnError(&error)
+            if let error {
+                box.value = (false, (error["NSAppleScriptErrorMessage"] as? String) ?? "\(error)")
+            } else {
+                box.value = (true, result?.stringValue ?? "")
+            }
+            appleScriptLock.lock()
+            appleScriptInFlight = false
+            appleScriptLock.unlock()
+            done.signal()
+        }
+        if done.wait(timeout: .now() + deadline) == .timedOut {
+            FlightRecorder.log("kerio", "applescript_deadline", ["seconds": "\(Int(deadline))"])
+            return (false, "System Events is not responding (timed out after \(Int(deadline))s)")
+        }
+        return box.value
+    }
+
+    private final class ScriptResultBox: @unchecked Sendable {
+        var value: (ok: Bool, text: String) = (false, "")
     }
 }

@@ -10,6 +10,8 @@ enum AppScenario: String, Equatable {
     case splitHealthy
     case splitWithExternalOutbound
     case conflict
+    case tunnelStale
+    case networkDown
     case outboundBuiltIn
     case offlineHint
     case idleReady
@@ -30,6 +32,7 @@ struct ScenarioAction: Identifiable, Equatable {
         case openOutbound
         case openSettings
         case cancelConnect
+        case reconnect
     }
 }
 
@@ -59,7 +62,8 @@ enum ScenarioEngine {
         snapshot: NetworkSnapshot,
         outboundMode: OutboundMode,
         outboundConnected: Bool,
-        outboundProfileName: String
+        outboundProfileName: String,
+        tunnelHealth: TunnelHealth = .unknown
     ) -> ScenarioPresentation {
         if !helperReady {
             return ScenarioPresentation(
@@ -101,6 +105,29 @@ enum ScenarioEngine {
                 detail: "Restoring LAN routes, then stopping the VPN session.",
                 tone: .info,
                 actions: []
+            )
+        }
+
+        if tunnelHealth == .stale, isActive || snapshot.kerioSessionConnected {
+            return ScenarioPresentation(
+                scenario: .tunnelStale,
+                title: "Kerio looks connected, but it is not",
+                detail: "Kerio still reports Connected, but your VPN network no longer answers. Reconnect to bring it back.",
+                tone: .danger,
+                actions: [
+                    .init(id: "reconnect", title: "Reconnect", kind: .reconnect),
+                    .init(id: "kerio", title: "Open Kerio", kind: .openKerio)
+                ]
+            )
+        }
+
+        if tunnelHealth == .networkDown, isActive || snapshot.kerioSessionConnected {
+            return ScenarioPresentation(
+                scenario: .networkDown,
+                title: "No internet connection",
+                detail: "This Mac has no network, so the VPN cannot work. Join Wi-Fi or plug in Ethernet; Kerio Split reconnects when the network returns.",
+                tone: .warn,
+                actions: [.init(id: "disc", title: "Disconnect All", kind: .disconnectAll)]
             )
         }
 

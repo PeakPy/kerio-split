@@ -67,7 +67,7 @@ enum ConnectivityProbe {
         return report
     }
 
-    private static func kerioProbeTargets(sampleKerioHost: String, kerioGateway: String) -> [String] {
+    static func kerioProbeTargets(sampleKerioHost: String, kerioGateway: String) -> [String] {
         var out: [String] = []
         let gw = kerioGateway.trimmingCharacters(in: .whitespacesAndNewlines)
         if !gw.isEmpty, !gw.hasPrefix("link") { out.append(gw) }
@@ -88,8 +88,45 @@ enum ConnectivityProbe {
         return out.filter { seen.insert($0).inserted }
     }
 
-    private static func pingOnce(_ host: String) -> Bool {
+    static func pingOnce(_ host: String) -> Bool {
         let result = HelperService.runProcess("/sbin/ping", ["-c", "1", "-W", "1000", host], timeoutSeconds: 3)
         return result.ok
+    }
+}
+
+/// Whether the Kerio tunnel actually carries traffic. scutil can keep saying "Connected" long after
+/// the tunnel stopped answering, so this is the only honest "is it up" signal.
+enum TunnelHealth: String, Equatable {
+    case unknown
+    case healthy
+    case stale
+    case networkDown
+}
+
+enum TunnelLiveness {
+    /// Packet counters of an interface, from the `<Link#…>` row of `netstat -ib`.
+    static func counters(interface: String) -> (inPackets: UInt64, outPackets: UInt64)? {
+        guard !interface.isEmpty else { return nil }
+        let out = HelperService.runProcess("/usr/sbin/netstat", ["-I", interface, "-b"], timeoutSeconds: 3).text
+        for line in out.split(separator: "\n") where line.contains("<Link#") {
+            // Address may be blank, so read from the end: Ipkts Ierrs Ibytes Opkts Oerrs Obytes Coll
+            let f = line.split(separator: " ")
+            guard f.count >= 7,
+                  let i = UInt64(f[f.count - 7]),
+                  let o = UInt64(f[f.count - 4]) else { continue }
+            return (i, o)
+        }
+        return nil
+    }
+
+    /// True when any Kerio peer answers a ping sent out of the Kerio interface (when known).
+    static func respond(targets: [String], interface: String) -> Bool {
+        for host in targets {
+            var args = ["-c", "2", "-W", "1500"]
+            if !interface.isEmpty { args += ["-b", interface] }
+            args.append(host)
+            if HelperService.runProcess("/sbin/ping", args, timeoutSeconds: 5).ok { return true }
+        }
+        return false
     }
 }

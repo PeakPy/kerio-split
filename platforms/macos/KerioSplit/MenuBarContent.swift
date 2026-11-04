@@ -7,12 +7,25 @@ struct MenuBarContent: View {
     @ObservedObject var updater: UpdateManager
     @Environment(\.openWindow) private var openWindow
 
+    private var menuTitle: String {
+        switch controller.tunnelHealth {
+        case .stale: return "Kerio is NOT connected (not responding)"
+        case .networkDown: return "No internet connection"
+        default: return controller.isActive ? "Split + VPN connected" : "Split tunneling OFF"
+        }
+    }
+
     var body: some View {
         Group {
-            Text(controller.isActive ? "Split + VPN connected" : "Split tunneling OFF")
+            Text(menuTitle)
             Text(controller.menuBarSubtitle)
 
             Divider()
+
+            if controller.tunnelHealth == .stale {
+                Button("Reconnect") { controller.reconnect() }
+                    .disabled(controller.isBusy)
+            }
 
             Button("Connect All") {
                 controller.connectAll()

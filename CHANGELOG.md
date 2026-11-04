@@ -5,6 +5,18 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.3.6] - 2026-11-04
+
+### Added
+
+- Detects a Kerio tunnel that still says "Connected" but no longer carries traffic (peer ping through the tunnel, plus a check that packets leave the tunnel interface while none come back) and tells the user: system notification, Overview card, "Kerio not responding" chip and a warning in the menu bar
+- "Reconnect" action (Overview card and menu bar): disconnects, then runs Connect All again
+- Separate "No internet connection" state when the Mac has no default route, and a "Kerio is back" notification when the tunnel answers again
+
+### Fixed
+
+- A stuck System Events call can no longer block Kerio clicks for 20+ minutes: the whole AppleScript call is capped at 25s and a new one is refused while an abandoned one is still running
+
 ## [1.3.5] - 2026-11-03
 
 ### Fixed

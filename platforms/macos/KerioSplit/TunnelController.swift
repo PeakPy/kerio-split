@@ -18,6 +18,8 @@ final class TunnelController: ObservableObject {
     /// Optimistic from the files on disk so launch does not flash "Setup needed" and the
     /// auto-resume / auto-apply checks below see the real state; the async probe corrects it.
     @Published var helperReady = HelperService.filesPresent
+    /// Real traffic check on the Kerio tunnel (scutil Connected alone can be stale).
+    @Published var tunnelHealth: TunnelHealth = .unknown
     @Published var helperDetail = "Install the route helper once so Connect All does not ask for a password."
     @Published var processSteps: [FlowStep] = TunnelController.connectTimeline(helperReady: HelperService.filesPresent)
     @Published var sessionPhase: SessionPhase = .idle
@@ -123,13 +125,17 @@ final class TunnelController: ObservableObject {
     var configPathDisplay: String { configURL.path }
 
     var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.3.5"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.3.6"
     }
 
     var menuBarSubtitle: String {
         var parts: [String] = []
         parts.append(helperReady ? "Helper ready" : "Install helper")
-        if kerioTunnelSeen {
+        if tunnelHealth == .stale {
+            parts.append("Kerio not responding")
+        } else if tunnelHealth == .networkDown {
+            parts.append("No internet")
+        } else if kerioTunnelSeen {
             parts.append("VPN up")
         } else {
             parts.append("No VPN tunnel")
@@ -141,6 +147,7 @@ final class TunnelController: ObservableObject {
     }
 
     var menuBarSymbol: String {
+        if tunnelHealth == .stale || tunnelHealth == .networkDown { return "exclamationmark.triangle.fill" }
         if isActive { return "bolt.horizontal.circle.fill" }
         if kerioTunnelSeen { return "bolt.horizontal.circle" }
         return "circle.dashed"
@@ -158,6 +165,13 @@ final class TunnelController: ObservableObject {
     private var connectAllTask: DispatchWorkItem?
     private var lastLoggedDiagnosis: String?
     private var helperProbeInFlight = false
+    private var livenessInFlight = false
+    private var livenessFails = 0
+    private var livenessEverOK = false
+    private var pendingReconnect = false
+    private var lastCounters: (inPackets: UInt64, outPackets: UInt64)?
+    private var inboundFrozenSince: Date?
+    private var everInbound = false
     private var helperFailStreak = 0
     private var lastNetFingerprint = ""
     /// After Disconnect All, block auto Connect All / auto-apply so we don't bounce back online.
@@ -301,6 +315,9 @@ final class TunnelController: ObservableObject {
                 // Connectivity ~every 4s
                 if tick % 4 == 0 {
                     self.refreshConnectivity()
+                }
+                if tick % 5 == 0 {
+                    self.checkTunnelLiveness()
                 }
                 // Conflict auto-resolve is cheap (state checks only) and rate-limited inside.
                 self.runRouteGuardIfNeeded()
@@ -1467,8 +1484,8 @@ final class TunnelController: ObservableObject {
         }
     }
 
-    private func notify(title: String, body: String) {
-        guard config.options.notifyOnChange else { return }
+    private func notify(title: String, body: String, force: Bool = false) {
+        guard force || config.options.notifyOnChange else { return }
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
@@ -1854,6 +1871,132 @@ final class TunnelController: ObservableObject {
             self.setBusy(false)
             self.resetToIdleTimeline(status: success ? "All off — LAN only" : nil)
             self.probeNetwork()
+            if self.pendingReconnect {
+                self.pendingReconnect = false
+                guard success else { return }
+                self.suppressAutoApplyUntil = nil
+                self.autoApplyTriggered = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                    self?.connectAll()
+                }
+            }
+        }
+    }
+
+    /// Disconnect, then Connect All again — the fix for a Kerio session that says Connected but is dead.
+    func reconnect() {
+        guard !isBusy else { return }
+        FlightRecorder.log("connect", "reconnect_requested", ["health": tunnelHealth.rawValue])
+        pendingReconnect = true
+        disconnectAll()
+    }
+
+    /// Pings the Kerio peer through the tunnel. Only raises the alarm after the path has answered at
+    /// least once this session (ICMP may be filtered) and then stays silent for ~20s.
+    private func checkTunnelLiveness() {
+        let up = isActive || kerioSessionConnected
+        guard up, !isBusy, !livenessInFlight, !isTearingDown,
+              sessionPhase == .idle || sessionPhase == .connected else {
+            if !up { resetLiveness() }
+            return
+        }
+        let snap = networkSnapshot
+        let targets = ConnectivityProbe.kerioProbeTargets(
+            sampleKerioHost: config.vpnRoutes.first ?? "",
+            kerioGateway: snap.kerioGateway
+        )
+        guard !targets.isEmpty else { return }
+        let iface = snap.kerioInterface
+        livenessInFlight = true
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let ok = TunnelLiveness.respond(targets: targets, interface: iface)
+            let counters = TunnelLiveness.counters(interface: iface)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.livenessInFlight = false
+                self.trackInbound(counters)
+                self.applyLiveness(ok: ok)
+            }
+        }
+    }
+
+    /// ICMP may be filtered, so also watch the interface: packets going out while nothing ever comes
+    /// back (after the tunnel had carried inbound traffic) means the tunnel is dead.
+    private func trackInbound(_ c: (inPackets: UInt64, outPackets: UInt64)?) {
+        guard let c else { return }
+        defer { lastCounters = c }
+        guard let last = lastCounters, c.inPackets >= last.inPackets else {
+            inboundFrozenSince = nil
+            everInbound = c.inPackets > 0
+            return
+        }
+        if c.inPackets > last.inPackets {
+            everInbound = true
+            inboundFrozenSince = nil
+        } else if c.outPackets > last.outPackets, inboundFrozenSince == nil {
+            inboundFrozenSince = Date()
+        }
+    }
+
+    private var inboundDead: Bool {
+        guard everInbound, let since = inboundFrozenSince else { return false }
+        return Date().timeIntervalSince(since) >= 45
+    }
+
+    private func applyLiveness(ok: Bool) {
+        if ok {
+            livenessFails = 0
+            livenessEverOK = true
+            if tunnelHealth == .stale || tunnelHealth == .networkDown {
+                recordEvent("Kerio tunnel answers again")
+                FlightRecorder.log("health", "recovered", [:])
+                pinStatus("Kerio tunnel is back", seconds: 8)
+                notify(title: "Kerio is back", body: "The VPN tunnel answers again.", force: true)
+            }
+            tunnelHealth = .healthy
+            refreshScenario()
+            return
+        }
+        livenessFails += 1
+        guard livenessEverOK || inboundDead else { return }
+        if networkSnapshot.defaultInterface.isEmpty {
+            if livenessFails >= 2, tunnelHealth != .networkDown {
+                tunnelHealth = .networkDown
+                recordEvent("No network — VPN cannot work until the Mac is online")
+                FlightRecorder.log("health", "network_down", [:])
+                pinStatus("No internet connection — join Wi-Fi or Ethernet", seconds: 12)
+                notify(title: "No internet connection", body: "Kerio is cut off until this Mac is online again.", force: true)
+                refreshScenario()
+            }
+            return
+        }
+        if livenessFails >= 4, tunnelHealth != .stale {
+            tunnelHealth = .stale
+            recordEvent("Kerio says Connected but the tunnel does not answer")
+            FlightRecorder.log("health", "stale", [
+                "fails": "\(livenessFails)",
+                "pingEverOK": livenessEverOK ? "1" : "0",
+                "inboundDead": inboundDead ? "1" : "0"
+            ])
+            pinStatus("Kerio is not responding — tap Reconnect", seconds: 15)
+            notify(
+                title: "Kerio is not really connected",
+                body: "It still says Connected, but the VPN does not answer. Open Kerio Split and tap Reconnect.",
+                force: true
+            )
+            refreshScenario()
+        }
+    }
+
+    private func resetLiveness() {
+        livenessFails = 0
+        livenessEverOK = false
+        lastCounters = nil
+        inboundFrozenSince = nil
+        everInbound = false
+        if tunnelHealth != .unknown {
+            tunnelHealth = .unknown
+            refreshScenario()
         }
     }
 
@@ -1991,7 +2134,8 @@ final class TunnelController: ObservableObject {
             snapshot: networkSnapshot,
             outboundMode: config.options.outboundMode,
             outboundConnected: outboundConnected,
-            outboundProfileName: activeName
+            outboundProfileName: activeName,
+            tunnelHealth: tunnelHealth
         )
         networkEvents = eventLog.events
         outboundConnected = outboundManager.isConnected
@@ -2066,6 +2210,7 @@ final class TunnelController: ObservableObject {
         case .openSettings:
             NotificationCenter.default.post(name: .kerioSplitNavigate, object: AppSection.settings)
         case .cancelConnect: cancelConnectAll()
+        case .reconnect: reconnect()
         }
     }
 
